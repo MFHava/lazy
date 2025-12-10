@@ -138,7 +138,9 @@ namespace lazy {
 
 		template<typename Clock, typename Duration>
 		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> bool /*TODO: [C++26] pre(not valueless())*/ {
+#if __cpp_lib_chrono >= 201907L
 			static_assert(std::chrono::is_clock_v<Clock>);
+#endif
 			if(handle.done()) return true;
 			auto & promise{handle.promise()};
 			internal::promise_base::suspension s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<std::remove_reference_t<decltype(time)> *>(ptr); }};
