@@ -41,7 +41,7 @@ namespace lazy {
 			//! @note result of computation, only set once task is done
 			std::optional<T> result;
 
-			template<typename U>
+			template<typename U = T>
 			void return_value(U && value) { result.emplace(std::forward<U>(value)); }
 		};
 
