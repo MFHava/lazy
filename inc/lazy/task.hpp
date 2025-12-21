@@ -52,6 +52,7 @@ namespace lazy {
 		};
 	}
 
+	//! @brief tag to yield progress within a @c task
 	inline
 	constexpr
 	internal::progress_t progress{1};
@@ -61,29 +62,33 @@ namespace lazy {
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
-	template<typename T>
+	template<typename T> //TODO: allocator support, default argument for T?
 	struct task final {
 		struct promise_type final : internal::basic_promise<T> {
 			promise_type() { this->top = std::coroutine_handle<promise_type>::from_promise(*this); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
-			auto initial_suspend() noexcept { return std::suspend_always{}; }
+			static
+			auto initial_suspend() noexcept -> std::suspend_always { return {}; }
 
+			static
 			auto final_suspend() noexcept {
-				struct awaitable final {
-					auto await_ready() const noexcept { return false; }
-					auto await_suspend(std::coroutine_handle<promise_type> self) const noexcept -> std::coroutine_handle<> {
+				struct awaiter final {
+					static
+					auto await_ready() noexcept { return false; }
+					static
+					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
 						if(const auto nested{self.promise().nested}) {
 							nested->root->top = nested->parent;
 							if(not nested->root->must_suspend()) return nested->root->top;
 						}
 						return std::noop_coroutine();
 					}
-					//! @note we never resume a done coroutine
-					void await_resume() const noexcept /*TODO: [C++26] pre(false)*/ {}
+					static
+					void await_resume() noexcept {}
 				};
-				return awaitable{};
+				return awaiter{};
 			}
 
 			auto yield_value(internal::progress_t) const noexcept {
@@ -91,18 +96,21 @@ namespace lazy {
 					const bool suspend;
 
 					auto await_ready() const noexcept { return not suspend; }
-					void await_suspend(std::coroutine_handle<>) const noexcept {}
-					void await_resume() const noexcept {}
+					static
+					void await_suspend(std::coroutine_handle<>) noexcept {}
+					static
+					void await_resume() noexcept {}
 				};
 				return awaiter{(this->nested ? this->nested->root : this)->must_suspend()};
 			}
 
-			void unhandled_exception() {
+			void unhandled_exception() const {
 				if(this->nested) this->nested->eptr = std::current_exception();
 				else throw;
 			}
 
 			template<typename U>
+			static
 			auto await_transform(task<U> && other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter final {
 					task<U> other;
