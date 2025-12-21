@@ -53,7 +53,9 @@ static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generato
 
 auto flipflop() -> lazy::generator<int> {
 	for(int i = 0; i < 8; ++i) {
+		co_yield lazy::progress;
 		co_yield i % 2;
+		co_yield lazy::progress;
 	}
 	std::printf("\n");
 }
@@ -66,9 +68,15 @@ TEST_CASE("generator flipflop", "[generator]") {
 		}
 	}();
 
+#if 0
 	t.wait();
+#else
+	using namespace std::chrono_literals;
+	while(not t.wait_for(0ms)) std::printf("===\n");
+#endif
+
 }
-#if 1
+#if 0
 auto iota() -> lazy::generator<int> {
 	co_yield lazy::ranges::elements_of(flipflop());
 

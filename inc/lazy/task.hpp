@@ -167,14 +167,17 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
 						this->self = self;
 						it.handle.promise().parent_task = self;
+						it.handle.promise().suspend = self.promise().suspend;
 						if(self.promise().nested) self.promise().nested->root->top = it.handle.promise().top;
 						else self.promise().top = it.handle.promise().top;
 						return it.handle.promise().top;
 					}
 					auto await_resume() const noexcept -> bool {
 						it.handle.promise().parent_task = std::coroutine_handle<>{};
+						it.handle.promise().suspend = nullptr;
 						if(self.promise().nested) self.promise().nested->root->top = self;
 						else self.promise().top = self;
+						//TODO: exception?
 						return not it.handle.done();
 					}
 				};
@@ -281,7 +284,8 @@ namespace lazy {
 			std::add_pointer_t<yielded> ptr{nullptr};
 		public: //TODO: remove
 			std::coroutine_handle<promise_type> top{std::coroutine_handle<promise_type>::from_promise(*this)};
-			std::coroutine_handle<> parent_task;
+			std::coroutine_handle<> parent_task{std::noop_coroutine()};
+			internal::function_ref * suspend{nullptr};
 		public:
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
@@ -295,11 +299,24 @@ namespace lazy {
 							nested->bottom.promise().top = parent;
 							parent.promise().top = parent;
 							return parent;
-						} else return std::noop_coroutine();
+						} else return handle.promise().parent_task;
 					}
 					void await_resume() const noexcept {}
 				};
 				return awaitable{};
+			}
+
+			auto yield_value(internal::progress_t) const noexcept {
+				struct awaiter final {
+					const bool suspend;
+
+					auto await_ready() const noexcept { return not suspend; }
+					static
+					void await_suspend(std::coroutine_handle<>) noexcept {}
+					static
+					void await_resume() noexcept {}
+				};
+				return awaiter{suspend ? suspend->fptr(suspend->ctx) : false};
 			}
 
 			auto yield_value(yielded val) noexcept {
