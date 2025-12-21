@@ -25,6 +25,9 @@ namespace lazy {
 			bool (*fptr)(const void *) noexcept;
 		};
 
+		template<typename T>
+		struct iterator final { const T & it; };
+
 		struct promise_base;
 
 		struct nested_info final {
@@ -152,6 +155,32 @@ namespace lazy {
 				};
 				return awaiter{std::move(other)};
 			}
+
+			template<typename U>
+			static
+			auto await_transform(internal::iterator<U> other) {
+				struct awaiter final {
+					const U & it;
+					std::coroutine_handle<promise_type> self;
+
+					auto await_ready() const noexcept -> bool { return it.handle.done(); }
+					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
+						this->self = self;
+						it.handle.promise().parent_task = self;
+						if(self.promise().nested) self.promise().nested->root->top = it.handle.promise().top;
+						else self.promise().top = it.handle.promise().top;
+						return it.handle.promise().top;
+					}
+					auto await_resume() const noexcept -> bool {
+						it.handle.promise().parent_task = std::coroutine_handle<>{};
+						if(self.promise().nested) self.promise().nested->root->top = self;
+						else self.promise().top = self;
+						return not it.handle.done();
+					}
+				};
+
+				return awaiter{other.it};
+			}
 		};
 
 		auto valueless() const noexcept -> bool { return !handle; }
@@ -212,7 +241,7 @@ namespace lazy {
 //TODO: still sync generator
 
 	namespace ranges {
-		template<std::ranges::range Range>
+		template</*TODO std::ranges::range*/ typename Range>
 		struct elements_of {
 			Range range;
 		};
@@ -250,7 +279,9 @@ namespace lazy {
 			} * nested{nullptr};
 
 			std::add_pointer_t<yielded> ptr{nullptr};
+		public: //TODO: remove
 			std::coroutine_handle<promise_type> top{std::coroutine_handle<promise_type>::from_promise(*this)};
+			std::coroutine_handle<> parent_task;
 		public:
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
@@ -271,18 +302,35 @@ namespace lazy {
 				return awaitable{};
 			}
 
-			auto yield_value(yielded val) noexcept -> std::suspend_always {
+			auto yield_value(yielded val) noexcept {
 				ptr = std::addressof(val);
-				return {};
+				struct awaiter final {
+					static
+					auto await_ready() noexcept { return false; }
+					static
+					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
+						if(auto nested{self.promise().nested}) return nested->bottom.promise().parent_task;
+						else return self.promise().parent_task;
+					}
+					static
+					void await_resume() noexcept {}
+				};
+				return awaiter{};
 			}
 
 			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> && std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> {
 				struct awaitable final {
 					std::remove_cvref_t<yielded> val;
 
-					auto await_ready() const noexcept -> bool { return false; }
-					void await_suspend(std::coroutine_handle<promise_type> handle) noexcept { handle.promise().ptr = std::addressof(val); }
-					void await_resume() const noexcept {}
+					static
+					auto await_ready() noexcept -> bool { return false; }
+					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
+						self.promise().ptr = std::addressof(val);
+						if(auto nested{self.promise().nested}) return nested->bottom.promise().parent_task;
+						else return self.promise().parent_task;
+					}
+					static
+					void await_resume() noexcept {}
 				};
 				return awaitable{lval};
 			}
@@ -321,18 +369,6 @@ namespace lazy {
 				if(nested) nested->eptr = std::current_exception();
 				else throw;
 			}
-
-			//auto operator new(std::size_t size) -> void * {
-			//	auto ptr{std::malloc(size)};
-			//	if(!ptr) throw std::bad_alloc{};
-			//	//TODO: store information for type-erase inside allocated memory block
-			//	return ptr;
-			//}
-			//void operator delete(void * pointer, std::size_t size) noexcept {
-			//	(void)size;
-			//	std::free(pointer);
-			//	//TODO: extract type-erased deleter from memory block and used instead of direct call to std::free
-			//}
 		};
 	private:
 		struct iterator final {
@@ -352,19 +388,16 @@ namespace lazy {
 
 			auto operator++() -> iterator & {
 				//TODO: [C++??] precondition(!handle.done());
-				handle.promise().top.resume();
 				return *this;
 			}
 			void operator++(int) { ++*this; }
 
 			friend
-			auto operator==(const iterator & i, std::default_sentinel_t) -> bool {
-				return i.handle.done();
-			}
+			auto operator!=(const iterator & i, std::default_sentinel_t) { return internal::iterator{i}; }
 		private:
 			friend generator;
 			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-
+		public: //TODO: remove
 			std::coroutine_handle<promise_type> handle;
 		};
 	public:
@@ -380,7 +413,6 @@ namespace lazy {
 
 		auto begin() -> iterator {
 			//TODO: [C++??] precondition(handle­ refers to a coroutine suspended at its initial suspend point);
-			handle.resume();
 			return handle;
 		}
 		auto end() const noexcept -> std::default_sentinel_t { return std::default_sentinel; }

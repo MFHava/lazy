@@ -58,11 +58,15 @@ auto flipflop() -> lazy::generator<int> {
 	std::printf("\n");
 }
 TEST_CASE("generator flipflop", "[generator]") {
-	auto gen{flipflop()};
+	auto t = []() -> lazy::task<void> {
+		auto gen{flipflop()};
 
-	for(auto i : gen) {
-		printf("%d ", i);
-	}
+		for(auto beg = gen.begin(); co_await(beg != gen.end()); ++beg) {
+			printf("%d ", *beg);
+		}
+	}();
+
+	t.wait();
 }
 #if 1
 auto iota() -> lazy::generator<int> {
@@ -85,11 +89,21 @@ auto fibonacci() -> lazy::generator<int> {
 }
 
 TEST_CASE("generator fib", "[generator]") {
-	auto fib{fibonacci()};
-	for(auto i : fibonacci()) {
-		if(i > 1000) break;
-		std::printf("%d ", i);
-	}
+	auto t = []() -> lazy::task<void> {
+		auto gen{fibonacci()};
+		for(auto beg = gen.begin(); co_await(beg != gen.end()); ++beg) {
+			auto && i{*beg};
+
+			co_await []() -> lazy::task<void> {
+				std::printf("nested task\n");
+				co_return;
+			}(); 
+
+			if(i > 1000) break;
+			std::printf("%d ", i);
+		}
+	}();
+	t.wait();
 
 	//auto it{fib.begin()};
 	//*it;
