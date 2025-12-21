@@ -111,11 +111,14 @@ namespace lazy {
 		};
 
 
-		//TODO: this does not work correctly with nested generators!!!! 
 		template<typename Other>
-		struct iterator_awaiter final : push_awaiter<Other> {
+		struct iterator_awaiter final {
+			Other other;
+			nested_info n;
 			std::coroutine_handle<> self;
 			std::coroutine_handle<> * top;
+
+			auto await_ready() const noexcept { return other.handle.done(); }
 
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
@@ -126,22 +129,24 @@ namespace lazy {
 				top = std::addressof(nested ? nested->root->top : self.promise().top);
 				//! @attention setup return target for generator's @c co_yield
 				this->other.handle.promise().parent_task = self;
-				return push_awaiter<Other>::await_suspend(self);
+
+				other.handle.promise().nested = std::addressof(n);
+				n.parent = self;
+				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle.promise().top ? other.handle.promise().top : other.handle;
+
+				assert(n.root->top);
+				return /*TODO: n.root->must_suspend() ? std::noop_coroutine() :*/ n.root->top;
 			}
 
 			auto await_resume() const noexcept -> bool {
-				this->other.handle.promise().ptr = decltype(this->other.handle)::from_address(top->address()).promise().ptr;
-				this->other.handle.promise().top = decltype(this->other.handle)::from_address(top->address()).promise().top;
-				this->other.handle.promise().nested = nullptr;
-
-
-                //TODO: why?
-                //this->other.handle.promise().top = this->n.root->top;
+				auto & promise{this->other.handle.promise()};
+				promise.top = *top; //top of generator must point to logical top of stack
+				promise.ptr = decltype(this->other.handle)::from_address(top->address()).promise().ptr; //pointer to result must be copied to direct promise as we can't navigate to "top" later
+				promise.nested = nullptr; //we are no longer nested
 
 				//! @attention restore @c root->top from before suspension
 				*top = self;
-				push_awaiter<Other>::await_resume();
-
+				if(n.eptr) std::rethrow_exception(n.eptr);
 				return not this->other.handle.done();
 			}
 		};

@@ -52,6 +52,7 @@ static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generato
 
 
 auto flipflop() -> lazy::generator<int> {
+	printf("flipflop\n");
 	for(int i = 0; i < 8; ++i) {
 		co_yield lazy::progress;
 		co_yield i % 2;
@@ -61,7 +62,7 @@ auto flipflop() -> lazy::generator<int> {
 
 auto iota() -> lazy::generator<int> {
 	co_yield lazy::ranges::elements_of(flipflop());
-
+	printf("iota\n");
 	for(int i = 0; i < 10; ++i) {
 		co_yield i;
 	}
@@ -69,7 +70,7 @@ auto iota() -> lazy::generator<int> {
 
 auto fibonacci() -> lazy::generator<int> {
 	co_yield lazy::ranges::elements_of{iota()};
-
+	printf("fibonacci\n");
 	auto a = 0, b = 1;
 	for (;;) {
 		co_yield std::exchange(a, std::exchange(b, a + b));
