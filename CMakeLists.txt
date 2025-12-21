@@ -12,6 +12,8 @@ add_library(lazy INTERFACE)
 	target_include_directories(lazy INTERFACE "inc")
 	if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 		target_compile_options(lazy INTERFACE -Wall -Wextra -Wpedantic -Wconversion)
+		target_compile_options(lazy INTERFACE -fsanitize=address)
+		target_link_options(lazy INTERFACE -fsanitize=address)
 	elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 		target_compile_options(lazy INTERFACE
 			# warning flags
