@@ -109,6 +109,53 @@ namespace lazy {
 				if(n.eptr) std::rethrow_exception(n.eptr);
 			}
 		};
+
+
+		//TODO: this does not work correctly with nested generators!!!! 
+		template<typename Other>
+		struct iterator_awaiter final : push_awaiter<Other> {
+			std::coroutine_handle<> self;
+			std::coroutine_handle<> * top;
+
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+				//! @attention store @c self to restore as @c top on resumption
+				this->self = self;
+				//! @attention store address of @c root->top to be able to set it on resumption
+				auto nested{self.promise().nested};
+				top = std::addressof(nested ? nested->root->top : self.promise().top);
+				//! @attention setup return target for generator's @c co_yield
+				this->other.handle.promise().parent_task = self;
+				return push_awaiter<Other>::await_suspend(self);
+			}
+
+			auto await_resume() const noexcept -> bool {
+				this->other.handle.promise().ptr = decltype(this->other.handle)::from_address(top->address()).promise().ptr;
+				this->other.handle.promise().top = decltype(this->other.handle)::from_address(top->address()).promise().top;
+				this->other.handle.promise().nested = nullptr;
+
+
+                //TODO: why?
+                //this->other.handle.promise().top = this->n.root->top;
+
+				//! @attention restore @c root->top from before suspension
+				*top = self;
+				push_awaiter<Other>::await_resume();
+
+				return not this->other.handle.done();
+			}
+		};
+
+
+		struct yield_awaiter {
+			static
+			auto await_ready() noexcept { return false; }
+			template<typename Promise>
+			static
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().parent_task; }
+			static
+			void await_resume() noexcept {}
+		};
 	}
 
 	//! @brief tag to yield progress within a @c task
@@ -158,32 +205,7 @@ namespace lazy {
 
 			template<typename U>
 			static
-			auto await_transform(internal::iterator<U> other) {
-				struct awaiter final {
-					const U & it;
-					std::coroutine_handle<promise_type> self;
-
-					auto await_ready() const noexcept -> bool { return it.handle.done(); }
-					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
-						this->self = self;
-						it.handle.promise().parent_task = self;
-						it.handle.promise().suspend = self.promise().suspend;
-						if(self.promise().nested) self.promise().nested->root->top = it.handle.promise().top;
-						else self.promise().top = it.handle.promise().top;
-						return it.handle.promise().top;
-					}
-					auto await_resume() const noexcept -> bool {
-						it.handle.promise().parent_task = std::coroutine_handle<>{};
-						it.handle.promise().suspend = nullptr;
-						if(self.promise().nested) self.promise().nested->root->top = self;
-						else self.promise().top = self;
-						//TODO: exception?
-						return not it.handle.done();
-					}
-				};
-
-				return awaiter{other.it};
-			}
+			auto await_transform(internal::iterator<U> other) { return internal::iterator_awaiter<const U &>{other.it}; }
 		};
 
 		auto valueless() const noexcept -> bool { return !handle; }
@@ -273,38 +295,14 @@ namespace lazy {
 	public:
 		using yielded = std::conditional_t<std::is_reference_v<reference>, reference, const reference &>;
 
-		class promise_type final {
-			friend iterator;
-
-		public: //TODO: remove
-			struct nested_info final {
-				std::exception_ptr eptr;
-				promise_type * root;
-				std::coroutine_handle<promise_type> parent; //"stack" navigation
-			} * nested{nullptr};
-
+		struct promise_type final : internal::promise_base {
 			std::add_pointer_t<yielded> ptr{nullptr};
-			std::coroutine_handle<promise_type> top{std::coroutine_handle<promise_type>::from_promise(*this)};
-			std::coroutine_handle<> parent_task{std::noop_coroutine()};
-			internal::function_ref * suspend{nullptr};
-		public:
+			std::coroutine_handle<> parent_task;
+
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
 			auto initial_suspend() const noexcept -> std::suspend_always { return {}; }
-			auto final_suspend() noexcept {
-				struct awaitable final {
-					auto await_ready() const noexcept -> bool { return false; }
-					auto await_suspend(std::coroutine_handle<promise_type> handle) noexcept -> std::coroutine_handle<> {
-						if(auto nested{handle.promise().nested}) {
-							auto parent{nested->parent};
-							nested->root->top = parent;
-							return parent;
-						} else return handle.promise().parent_task;
-					}
-					void await_resume() const noexcept {}
-				};
-				return awaitable{};
-			}
+			auto final_suspend() noexcept { return internal::pop_awaiter{}; }
 
 			auto yield_value(internal::progress_t) const noexcept {
 				struct awaiter final {
@@ -321,55 +319,26 @@ namespace lazy {
 
 			auto yield_value(yielded val) noexcept {
 				ptr = std::addressof(val);
-				struct awaiter final {
-					static
-					auto await_ready() noexcept { return false; }
-					static
-					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
-						if(auto nested{self.promise().nested}) return nested->root->parent_task;
-						else return self.promise().parent_task;
-					}
-					static
-					void await_resume() noexcept {}
-				};
-				return awaiter{};
+				return internal::yield_awaiter{};
 			}
 
 			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> && std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> {
-				struct awaitable final {
+				struct awaiter final : internal::yield_awaiter {
 					std::remove_cvref_t<yielded> val;
 
-					static
-					auto await_ready() noexcept -> bool { return false; }
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
 						self.promise().ptr = std::addressof(val);
-						if(auto nested{self.promise().nested}) return nested->root->parent_task;
-						else return self.promise().parent_task;
+						return internal::yield_awaiter::await_suspend(self);
 					}
-					static
-					void await_resume() noexcept {}
 				};
-				return awaitable{lval};
+				return awaiter{{}, lval};
 			}
 
 			template<typename R2, typename V2>
 			requires std::same_as<typename generator<R2, V2>::yielded, yielded>
 			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
-				struct awaitable final {
-					generator<R2, V2> g;
-					nested_info n;
-
-					auto await_ready() const noexcept -> bool { return false; }
-					auto await_suspend(std::coroutine_handle<promise_type> handle) {
-						g.handle.promise().nested = &n;
-						n.parent = handle;
-						auto & parent_promise{handle.promise()};
-						(n.root = parent_promise.nested ? parent_promise.nested->root : &parent_promise.top.promise())->top = g.handle; //TODO: remove assert...
-						return g.handle;
-					}
-					void await_resume() const { if(n.eptr) std::rethrow_exception(n.eptr); }
-				};
-				return awaitable{std::move(g.range)};
+				g.range.handle.promise().parent_task = parent_task;
+				return internal::push_awaiter<generator<R2, V2>>{std::move(g.range)};
 			}
 
 			template<std::ranges::input_range R>
@@ -400,7 +369,7 @@ namespace lazy {
 
 			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference {
 				//TODO: [C++??] precondition(!handle.done());
-				return static_cast<reference>(*handle.promise().top.promise().ptr);
+				return static_cast<reference>(*handle.promise().ptr);
 			}
 
 			auto operator++() -> iterator & {
@@ -437,6 +406,7 @@ namespace lazy {
 		friend promise_type;
 		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
 
+	public: //TODO: remove
 		std::coroutine_handle<promise_type> handle{nullptr}; //exposition only
 	};
 }
