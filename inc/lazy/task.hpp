@@ -306,7 +306,6 @@ namespace lazy {
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
-			auto initial_suspend() const noexcept -> std::suspend_always { return {}; }
 			auto final_suspend() noexcept { return internal::pop_awaiter{}; }
 
 			auto yield_value(internal::progress_t) const noexcept {
@@ -356,10 +355,6 @@ namespace lazy {
 			void await_transform() =delete;
 
 			void return_void() const noexcept {}
-			void unhandled_exception() {
-				if(nested) nested->eptr = std::current_exception();
-				else throw;
-			}
 		};
 	private:
 		struct iterator final {
