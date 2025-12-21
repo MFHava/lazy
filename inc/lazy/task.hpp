@@ -19,17 +19,23 @@ namespace lazy {
 			progress_t(int) noexcept {}
 		};
 
+		struct function_ref final {
+			const void * ctx;
+			bool (*fptr)(const void *) noexcept;
+		};
+
+		struct promise_base;
+
+		struct nested_info final {
+			std::exception_ptr eptr;        //needed for manual stack unwinding
+			std::coroutine_handle<> parent; //directly preceding coroutine
+			promise_base * root;            //bottom of implicit coroutine-"stack"
+		};
+
 		struct promise_base {
 			std::coroutine_handle<> top; //top of implicit stack
-			struct nested_info final {
-				std::exception_ptr eptr;        //needed for manual stack unwinding
-				std::coroutine_handle<> parent; //directly preceding coroutine
-				promise_base * root;            //bottom of implicit coroutine-"stack"
-			} * nested{nullptr};
-			struct suspension final { //callback to check for suspension on co_yield
-				const void * ctx;
-				bool (*fptr)(const void *) noexcept;
-			} * suspend; //nullptr => never suspend
+			nested_info * nested{nullptr};
+			function_ref * suspend{nullptr}; //callback to check for suspension on co_yield  - nullptr => never suspend
 
 			auto must_suspend() const -> bool /*TODO: [C++26] pre(not nested)*/ { return suspend ? suspend->fptr(suspend->ctx) : false; }
 		};
@@ -114,7 +120,7 @@ namespace lazy {
 			auto await_transform(task<U> && other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter final {
 					task<U> other;
-					internal::promise_base::nested_info n;
+					internal::nested_info n;
 
 					auto await_ready() const noexcept { return other.handle.done(); }
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
@@ -124,7 +130,7 @@ namespace lazy {
 						(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle;
 						return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 					}
-					auto await_resume() -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
+					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
 						if(n.eptr) std::rethrow_exception(n.eptr);
 						if constexpr(not std::is_void_v<U>) return std::move(*other.handle.promise().result);
 					}
@@ -135,12 +141,7 @@ namespace lazy {
 
 		auto valueless() const noexcept -> bool { return !handle; }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
-			if(handle.done()) return;
-			auto & promise{handle.promise()};
-			promise.suspend = nullptr;
-			resume(promise.top);
-		}
+		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ { if(not handle.done()) resume(handle.promise().top); }
 
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
@@ -152,13 +153,15 @@ namespace lazy {
 #endif
 			if(handle.done()) return true;
 			auto & promise{handle.promise()};
-			internal::promise_base::suspension s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<std::remove_reference_t<decltype(time)> *>(ptr); }};
+			using Time = std::remove_reference_t<decltype(time)>;
+			internal::function_ref s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }};
 			promise.suspend = &s;
 			resume(promise.top);
+			promise.suspend = nullptr;
 			return handle.done();
 		}
 
-		auto get() -> std::add_lvalue_reference_t<T> /*TODO: [C++26] pre(not valueless())*/ {
+		auto get() -> std::add_lvalue_reference_t<T> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
 			wait();
 			if constexpr(not std::is_void_v<T>) return *handle.promise().result;
 		}
