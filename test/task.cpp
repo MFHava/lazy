@@ -50,6 +50,13 @@ TEST_CASE("nesting", "[lazy]") {
 
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 
+auto yolo() -> lazy::generator<char> {
+	co_yield 'y';
+	co_yield 'o';
+	co_yield 'l';
+	co_yield 'o';
+}
+
 
 auto flipflop() -> lazy::generator<int> {
 	printf("flipflop\n");
@@ -90,6 +97,10 @@ TEST_CASE("generator fib", "[generator]") {
 				std::printf("nested task\n");
 				co_return;
 			}(); 
+
+			auto g{yolo()};
+			for(auto b = g.begin(); co_await(b != g.end()); ++b) std::printf("%c", *b);
+			std::printf("\n");
 		}
 	}();
 	t.wait();
