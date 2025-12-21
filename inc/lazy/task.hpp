@@ -276,13 +276,14 @@ namespace lazy {
 		class promise_type final {
 			friend iterator;
 
+		public: //TODO: remove
 			struct nested_info final {
 				std::exception_ptr eptr;
-				std::coroutine_handle<promise_type> bottom, parent; //"stack" navigation
+				promise_type * root;
+				std::coroutine_handle<promise_type> parent; //"stack" navigation
 			} * nested{nullptr};
 
 			std::add_pointer_t<yielded> ptr{nullptr};
-		public: //TODO: remove
 			std::coroutine_handle<promise_type> top{std::coroutine_handle<promise_type>::from_promise(*this)};
 			std::coroutine_handle<> parent_task{std::noop_coroutine()};
 			internal::function_ref * suspend{nullptr};
@@ -296,8 +297,7 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<promise_type> handle) noexcept -> std::coroutine_handle<> {
 						if(auto nested{handle.promise().nested}) {
 							auto parent{nested->parent};
-							nested->bottom.promise().top = parent;
-							parent.promise().top = parent;
+							nested->root->top = parent;
 							return parent;
 						} else return handle.promise().parent_task;
 					}
@@ -326,7 +326,7 @@ namespace lazy {
 					auto await_ready() noexcept { return false; }
 					static
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
-						if(auto nested{self.promise().nested}) return nested->bottom.promise().parent_task;
+						if(auto nested{self.promise().nested}) return nested->root->parent_task;
 						else return self.promise().parent_task;
 					}
 					static
@@ -343,7 +343,7 @@ namespace lazy {
 					auto await_ready() noexcept -> bool { return false; }
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
 						self.promise().ptr = std::addressof(val);
-						if(auto nested{self.promise().nested}) return nested->bottom.promise().parent_task;
+						if(auto nested{self.promise().nested}) return nested->root->parent_task;
 						else return self.promise().parent_task;
 					}
 					static
@@ -364,7 +364,7 @@ namespace lazy {
 						g.handle.promise().nested = &n;
 						n.parent = handle;
 						auto & parent_promise{handle.promise()};
-						(n.bottom = parent_promise.nested ? parent_promise.nested->bottom : (assert(parent_promise.top == handle), parent_promise.top)).promise().top = g.handle; //TODO: remove assert...
+						(n.root = parent_promise.nested ? parent_promise.nested->root : &parent_promise.top.promise())->top = g.handle; //TODO: remove assert...
 						return g.handle;
 					}
 					void await_resume() const { if(n.eptr) std::rethrow_exception(n.eptr); }

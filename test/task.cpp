@@ -57,33 +57,14 @@ auto flipflop() -> lazy::generator<int> {
 		co_yield i % 2;
 		co_yield lazy::progress;
 	}
-	std::printf("\n");
 }
-TEST_CASE("generator flipflop", "[generator]") {
-	auto t = []() -> lazy::task<void> {
-		auto gen{flipflop()};
 
-		for(auto beg = gen.begin(); co_await(beg != gen.end()); ++beg) {
-			printf("%d ", *beg);
-		}
-	}();
-
-#if 0
-	t.wait();
-#else
-	using namespace std::chrono_literals;
-	while(not t.wait_for(0ms)) std::printf("===\n");
-#endif
-
-}
-#if 0
 auto iota() -> lazy::generator<int> {
 	co_yield lazy::ranges::elements_of(flipflop());
 
 	for(int i = 0; i < 10; ++i) {
 		co_yield i;
 	}
-	std::printf("\n");
 }
 
 auto fibonacci() -> lazy::generator<int> {
@@ -93,7 +74,6 @@ auto fibonacci() -> lazy::generator<int> {
 	for (;;) {
 		co_yield std::exchange(a, std::exchange(b, a + b));
 	}
-	std::printf("\n");
 }
 
 TEST_CASE("generator fib", "[generator]") {
@@ -102,13 +82,13 @@ TEST_CASE("generator fib", "[generator]") {
 		for(auto beg = gen.begin(); co_await(beg != gen.end()); ++beg) {
 			auto && i{*beg};
 
+			if(i > 1000) break;
+			std::printf("%d ", i);
+
 			co_await []() -> lazy::task<void> {
 				std::printf("nested task\n");
 				co_return;
 			}(); 
-
-			if(i > 1000) break;
-			std::printf("%d ", i);
 		}
 	}();
 	t.wait();
@@ -131,5 +111,5 @@ TEST_CASE("generator fib", "[generator]") {
 	REQUIRE(*it == 34);
 #endif
 }
-#endif
+
 
