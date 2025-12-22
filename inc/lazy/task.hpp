@@ -194,7 +194,7 @@ namespace lazy {
 				struct awaiter : internal::push_awaiter<task<U>> {
 					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
 						internal::push_awaiter<task<U>>::await_resume();
-						if constexpr(not std::is_void_v<U>) return std::move(*this->other.handle.promise().result);
+						if constexpr(not std::is_void_v<U>) return std::move(*internal::get_handle(this->other).promise().result);
 					}
 				};
 				return awaiter{std::move(other)};
@@ -240,10 +240,8 @@ namespace lazy {
 		~task() noexcept { if(handle) handle.destroy(); }
 	private:
 		friend promise_type;
-
-		template<typename U>
 		friend
-		struct task;
+		auto internal::get_handle(auto &) noexcept;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -254,9 +252,6 @@ namespace lazy {
 				throw;
 			}
 		}
-
-		friend
-		auto internal::get_handle(auto &) noexcept;
 
 		std::coroutine_handle<promise_type> handle;
 	};
@@ -363,10 +358,10 @@ namespace lazy {
 			auto operator!=(const iterator & self, std::default_sentinel_t) { return internal::iterator_awaiter<const iterator &>{self}; }
 		private:
 			friend generator;
-			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-
 			friend
 			auto internal::get_handle(auto &) noexcept;
+
+			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
 			std::coroutine_handle<promise_type> handle;
 		};
@@ -388,10 +383,10 @@ namespace lazy {
 		auto end() const noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 	private:
 		friend promise_type;
-		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
-
 		friend
 		auto internal::get_handle(auto &) noexcept;
+
+		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
 
 		std::coroutine_handle<promise_type> handle;
 	};
