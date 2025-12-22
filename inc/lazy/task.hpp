@@ -136,7 +136,7 @@ namespace lazy {
 			std::coroutine_handle<> * top;
 
 			auto await_ready() const noexcept { return get_handle(other).done(); }
-
+			//TODO: document this stuff in more detail
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 				auto other_handle{get_handle(other)};
