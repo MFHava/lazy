@@ -392,7 +392,7 @@ namespace lazy {
 		friend
 		auto internal::get_handle(auto &) noexcept;
 
-		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
+		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
 		std::coroutine_handle<promise_type> handle;
 	};
