@@ -160,7 +160,7 @@ namespace lazy {
 				auto & promise{other_handle.promise()};
 				promise.top = *top; //top of generator must point to logical top of stack
 				promise.ptr = decltype(other_handle)::from_address(top->address()).promise().ptr; //pointer to result must be copied to direct promise as we can't navigate to "top" later
-				promise.nested = nullptr; //we are no longer nested
+				promise.nested = nullptr; //we are no longer nested (TODO: redudant?)
 
 				//! @attention restore @c root->top from before suspension
 				*top = self;
@@ -176,6 +176,7 @@ namespace lazy {
 	internal::progress_t progress{1};
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
+	//TODO: documentation for template parameter
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
@@ -222,7 +223,7 @@ namespace lazy {
 			internal::function_ref s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }};
 			promise.suspend = &s;
 			resume(promise.top);
-			promise.suspend = nullptr;
+			promise.suspend = nullptr; //TODO: redundant?
 			return handle.done();
 		}
 
@@ -274,6 +275,7 @@ namespace lazy {
 	//! @brief lazy view of elements yielded by a coroutine
 	//! @tparam Reference TODO
 	//! @tparam Value TODO
+	//TODO: document supported syntax
 	template<typename Reference, typename Value = void>
 	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
