@@ -369,21 +369,21 @@ namespace lazy {
 			std::coroutine_handle<promise_type> handle;
 		};
 	public:
-		generator(const generator &) =delete;
-		generator(generator && other) noexcept : handle{std::exchange(other.handle, {})} {}
-
-		auto operator=(generator other) noexcept -> generator & {
-			std::swap(handle, other.handle);
-			return *this;
-		}
-
-		~generator() noexcept { if(handle) handle.destroy(); }
+		//TODO: valueless? (=> way to mark valueless on exception?)
 
 		auto begin() -> iterator {
 			//TODO: [C++??] precondition(handle­ refers to a coroutine suspended at its initial suspend point);
 			return handle;
 		}
-		auto end() const noexcept -> std::default_sentinel_t { return std::default_sentinel; }
+		static
+		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
+
+		generator(generator && other) noexcept : handle{std::exchange(other.handle, {})} {}
+		auto operator=(generator && other) noexcept -> generator & {
+			std::swap(handle, other.handle);
+			return *this;
+		}
+		~generator() noexcept { if(handle) handle.destroy(); }
 	private:
 		friend promise_type;
 		friend
