@@ -102,20 +102,23 @@ namespace lazy {
 		};
 
 
+		//! @brief internal accessor to handle
+		auto get_handle(auto & val) { return val.handle; }
+
 
 		template<typename Other>
 		struct push_awaiter {
 			Other other;
 			promise_base::nested_info n;
 
-			auto await_ready() const noexcept { return other.handle.done(); }
+			auto await_ready() const noexcept { return get_handle(other).done(); }
 
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-				other.handle.promise().nested = std::addressof(n);
+				get_handle(other).promise().nested = std::addressof(n);
 				n.parent = self;
 				auto nested{self.promise().nested};
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle;
+				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = get_handle(other);
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
@@ -132,36 +135,40 @@ namespace lazy {
 			std::coroutine_handle<> self;
 			std::coroutine_handle<> * top;
 
-			auto await_ready() const noexcept { return other.handle.done(); }
+			auto await_ready() const noexcept { return get_handle(other).done(); }
 
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+				auto other_handle{get_handle(other)};
+
 				//! @attention store @c self to restore as @c top on resumption
 				this->self = self;
 				//! @attention store address of @c root->top to be able to set it on resumption
 				auto nested{self.promise().nested};
 				top = std::addressof(nested ? nested->root->top : self.promise().top);
 				//! @attention setup return target for generator's @c co_yield
-				this->other.handle.promise().parent_task = self;
+				other_handle.promise().parent_task = self;
 
-				other.handle.promise().nested = std::addressof(n);
+				other_handle.promise().nested = std::addressof(n);
 				n.parent = self;
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle.promise().top ? other.handle.promise().top : other.handle;
+				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_handle.promise().top ? other_handle.promise().top : other_handle;
 
 				assert(n.root->top);
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
 			auto await_resume() const noexcept -> bool {
-				auto & promise{this->other.handle.promise()};
+				auto other_handle{get_handle(other)};
+
+				auto & promise{other_handle.promise()};
 				promise.top = *top; //top of generator must point to logical top of stack
-				promise.ptr = decltype(this->other.handle)::from_address(top->address()).promise().ptr; //pointer to result must be copied to direct promise as we can't navigate to "top" later
+				promise.ptr = decltype(other_handle)::from_address(top->address()).promise().ptr; //pointer to result must be copied to direct promise as we can't navigate to "top" later
 				promise.nested = nullptr; //we are no longer nested
 
 				//! @attention restore @c root->top from before suspension
 				*top = self;
 				if(n.eptr) std::rethrow_exception(n.eptr);
-				return not this->other.handle.done();
+				return not other_handle.done();
 			}
 		};
 
@@ -261,7 +268,9 @@ namespace lazy {
 			}
 		}
 
-	public: //TODO: remove
+		friend
+		auto internal::get_handle(auto &);
+
 		std::coroutine_handle<promise_type> handle;
 	};
 
@@ -359,7 +368,10 @@ namespace lazy {
 		private:
 			friend generator;
 			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-		public: //TODO: remove
+
+			friend
+			auto internal::get_handle(auto &);
+
 			std::coroutine_handle<promise_type> handle;
 		};
 	public:
@@ -382,7 +394,9 @@ namespace lazy {
 		friend promise_type;
 		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
 
-	public: //TODO: remove
+		friend
+		auto internal::get_handle(auto &);
+
 		std::coroutine_handle<promise_type> handle;
 	};
 }
