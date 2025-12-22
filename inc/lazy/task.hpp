@@ -181,6 +181,7 @@ namespace lazy {
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
+	//TODO: support for `for co_await`
 	template<typename T> //TODO: allocator support, default argument for T?
 	struct task final {
 		struct promise_type final : internal::task_promise<T> {
