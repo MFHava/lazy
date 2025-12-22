@@ -1,4 +1,4 @@
-Lazy Task
+Lazy
 
 (c) Michael Florian Hava
 
@@ -6,7 +6,7 @@ Released under the Boost Software License - Version 1.0, see "LICENSE_1_0.txt" f
 
 Introduction
 ============
-Lazy cooperative synchronous task.
+Lazy cooperative synchronous task and recursive generator.
 
 Requirements
 ============

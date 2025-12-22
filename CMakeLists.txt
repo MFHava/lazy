@@ -5,7 +5,7 @@
 #          http://www.boost.org/LICENSE_1_0.txt)
 
 cmake_minimum_required(VERSION 3.26)
-project(LazyTask)
+project(Lazy)
 
 add_library(lazy INTERFACE)
 	target_compile_features(lazy INTERFACE cxx_std_20)
