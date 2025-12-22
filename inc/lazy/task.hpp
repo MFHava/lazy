@@ -137,18 +137,20 @@ namespace lazy {
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 				auto other_handle{get_handle(other)};
+				auto & other_promise{other_handle.promise()};
 
 				//! @attention store @c self to restore as @c top on resumption
 				this->self = self;
 				//! @attention store address of @c root->top to be able to set it on resumption
-				auto nested{self.promise().nested};
+				const auto & nested{self.promise().nested};
 				top = std::addressof(nested ? nested->root->top : self.promise().top);
 				//! @attention setup return target for generator's @c co_yield
-				other_handle.promise().parent_task = self;
+				assert(not other_promise.yield_target or other_promise.yield_target == self);
+				other_promise.yield_target = self;
 
-				other_handle.promise().nested = std::addressof(n);
+				other_promise.nested = std::addressof(n);
 				n.parent = self;
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_handle.promise().top ? other_handle.promise().top : other_handle;
+				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_promise.top ? other_promise.top : other_handle;
 
 				assert(n.root->top);
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
@@ -182,7 +184,7 @@ namespace lazy {
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	//TODO: support for `for co_await`
-	template<typename T> //TODO: allocator support, default argument for T?
+	template<typename T> //TODO: allocator support, default argument for T? (better name for T?)
 	struct task final {
 		struct promise_type final : internal::task_promise<T> {
 			promise_type() { this->top = std::coroutine_handle<promise_type>::from_promise(*this); }
@@ -201,9 +203,9 @@ namespace lazy {
 				return awaiter{std::move(other)};
 			}
 
-			template<typename U>
+			template<typename... Us>
 			static
-			auto await_transform(internal::iterator_awaiter<U> other) { return other; }
+			auto await_transform(internal::iterator_awaiter<Us...> other) { return other; }
 		};
 
 		auto valueless() const noexcept -> bool { return !handle; }
@@ -289,7 +291,7 @@ namespace lazy {
 
 		struct promise_type final : internal::promise_base {
 			std::add_pointer_t<yielded> ptr;
-			std::coroutine_handle<> parent_task; //TODO: better name
+			std::coroutine_handle<> yield_target;
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
@@ -315,7 +317,7 @@ namespace lazy {
 			template<typename R2, typename V2>
 			requires std::same_as<typename generator<R2, V2>::yielded, yielded>
 			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
-				g.range.handle.promise().parent_task = parent_task;
+				g.range.handle.promise().yield_target = yield_target;
 				return internal::push_awaiter<generator<R2, V2>>{std::move(g.range)};
 			}
 
@@ -338,7 +340,7 @@ namespace lazy {
 				auto await_ready() noexcept { return false; }
 				template<typename Promise>
 				static
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().parent_task; }
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; }
 				static
 				void await_resume() noexcept {}
 			};
