@@ -209,7 +209,7 @@ namespace lazy {
 			auto await_transform(internal::iterator_awaiter<U, V> other) { return other; }
 		};
 
-		auto valueless() const noexcept -> bool { return !handle; }
+		auto valueless() const noexcept -> bool { return not handle; }
 
 		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ { if(not handle.done()) resume(handle.promise().top); }
 
@@ -357,6 +357,7 @@ namespace lazy {
 				handle = std::exchange(other.handle, {});
 				return *this;
 			}
+			~iterator() noexcept { if(handle) handle.destroy(); }
 
 			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
@@ -374,12 +375,9 @@ namespace lazy {
 			std::coroutine_handle<promise_type> handle;
 		};
 	public:
-		//TODO: valueless? (=> way to mark valueless on exception?) [easy way could be to transfer ownership to iterator on begin]
+		auto valueless() const noexcept -> bool { return not handle; }
 
-		auto begin() {
-			//TODO: [C++??] precondition(handle­ refers to a coroutine suspended at its initial suspend point);
-			return internal::iterator_awaiter<iterator, true>{handle};
-		}
+		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 
