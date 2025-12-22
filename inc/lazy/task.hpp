@@ -325,6 +325,9 @@ namespace lazy {
 				return yield_value(ranges::elements_of(wrapped(std::ranges::begin(r.range), std::ranges::end(r.range))));
 			}
 
+			//TODO: support for task??
+			//TODO: support for `for co_wait`?
+
 			void await_transform() =delete;
 
 			void return_void() const noexcept {}
