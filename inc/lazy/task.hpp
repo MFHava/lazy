@@ -290,18 +290,16 @@ namespace lazy {
 	//! @tparam Value TODO
 	template<typename Reference, typename Value = void>
 	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
-		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>; //exposition only
+		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> && std::is_same_v<std::remove_cvref_t<value>, value>);
 
-		using reference = std::conditional_t<std::is_void_v<Value>, Reference &&, Reference>; //exposition only
+		using reference = std::conditional_t<std::is_void_v<Value>, Reference &&, Reference>;
 		static_assert(std::is_reference_v<reference> || (std::is_object_v<reference> && std::is_same_v<std::remove_cv_t<reference>, reference> && std::copy_constructible<reference>));
 
 		using rref = std::conditional_t<std::is_reference_v<reference>, std::remove_reference_t<reference> &&, reference>;
 		static_assert(std::common_reference_with<reference &&, value &>);
 		static_assert(std::common_reference_with<reference &&, rref &&>);
 		static_assert(std::common_reference_with<rref &&, const value &>);
-
-		struct iterator;
 	public:
 		using yielded = std::conditional_t<std::is_reference_v<reference>, reference, const reference &>;
 
