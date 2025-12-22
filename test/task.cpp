@@ -87,7 +87,7 @@ auto fibonacci() -> lazy::generator<int> {
 TEST_CASE("generator fib", "[generator]") {
 	auto t = []() -> lazy::task<void> {
 		auto gen{fibonacci()};
-		for(auto beg = gen.begin(); co_await(beg != gen.end()); ++beg) {
+		for(auto beg = co_await gen.begin(); beg != gen.end(); co_await ++beg) {
 			auto && i{*beg};
 
 			if(i > 1000) break;
@@ -99,7 +99,7 @@ TEST_CASE("generator fib", "[generator]") {
 			}(); 
 
 			auto g{yolo()};
-			for(auto b = g.begin(); co_await(b != g.end()); ++b) std::printf("%c", *b);
+			for(auto b = co_await g.begin(); b != g.end(); co_await ++b) std::printf("%c", *b);
 			std::printf("\n");
 		}
 	}();

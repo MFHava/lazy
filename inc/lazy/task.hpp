@@ -125,7 +125,7 @@ namespace lazy {
 		};
 
 
-		template<typename Other>
+		template<typename Other, bool Initial>
 		struct iterator_awaiter final {
 			Other other;
 			promise_base::nested_info n;
@@ -145,8 +145,8 @@ namespace lazy {
 				const auto & nested{self.promise().nested};
 				top = std::addressof(nested ? nested->root->top : self.promise().top);
 				//! @attention setup return target for generator's @c co_yield
-				assert(not other_promise.yield_target or other_promise.yield_target == self);
-				other_promise.yield_target = self;
+				if constexpr(Initial) other_promise.yield_target = self;
+				else assert(not other_promise.yield_target or other_promise.yield_target == self);
 
 				other_promise.nested = std::addressof(n);
 				n.parent = self;
@@ -156,7 +156,7 @@ namespace lazy {
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
-			auto await_resume() const noexcept -> bool {
+			auto await_resume() noexcept {
 				auto other_handle{get_handle(other)};
 
 				auto & promise{other_handle.promise()};
@@ -167,7 +167,8 @@ namespace lazy {
 				//! @attention restore @c root->top from before suspension
 				*top = self;
 				if(n.eptr) std::rethrow_exception(n.eptr);
-				return not other_handle.done();
+
+				if constexpr(Initial) return std::move(other);
 			}
 		};
 	}
@@ -203,9 +204,9 @@ namespace lazy {
 				return awaiter{std::move(other)};
 			}
 
-			template<typename... Us>
+			template<typename U, bool V>
 			static
-			auto await_transform(internal::iterator_awaiter<Us...> other) { return other; }
+			auto await_transform(internal::iterator_awaiter<U, V> other) { return other; }
 		};
 
 		auto valueless() const noexcept -> bool { return !handle; }
@@ -317,6 +318,7 @@ namespace lazy {
 			template<typename R2, typename V2>
 			requires std::same_as<typename generator<R2, V2>::yielded, yielded>
 			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
+				assert(not g.range.handle.promise().yield_target);
 				g.range.handle.promise().yield_target = yield_target;
 				return internal::push_awaiter<generator<R2, V2>>{std::move(g.range)};
 			}
@@ -358,10 +360,10 @@ namespace lazy {
 
 			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
-			void operator++() /*TODO: [C++26] pre(not handle.done())*/ {}
+			auto operator++() /*TODO: [C++26] pre(not handle.done())*/ { return internal::iterator_awaiter<iterator &, false>{*this}; }
 
 			friend
-			auto operator!=(const iterator & self, std::default_sentinel_t) { return internal::iterator_awaiter<const iterator &>{self}; }
+			auto operator==(const iterator & self, std::default_sentinel_t) noexcept -> bool { return self.handle.done(); }
 		private:
 			friend generator;
 			friend
@@ -372,11 +374,11 @@ namespace lazy {
 			std::coroutine_handle<promise_type> handle;
 		};
 	public:
-		//TODO: valueless? (=> way to mark valueless on exception?)
+		//TODO: valueless? (=> way to mark valueless on exception?) [easy way could be to transfer ownership to iterator on begin]
 
-		auto begin() -> iterator {
+		auto begin() {
 			//TODO: [C++??] precondition(handle­ refers to a coroutine suspended at its initial suspend point);
-			return handle;
+			return internal::iterator_awaiter<iterator, true>{handle};
 		}
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
