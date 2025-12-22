@@ -168,17 +168,6 @@ namespace lazy {
 				return not other_handle.done();
 			}
 		};
-
-
-		struct yield_awaiter {
-			static
-			auto await_ready() noexcept { return false; }
-			template<typename Promise>
-			static
-			auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().parent_task; }
-			static
-			void await_resume() noexcept {}
-		};
 	}
 
 	//! @brief tag to yield progress within a @c task
@@ -310,16 +299,16 @@ namespace lazy {
 
 			auto yield_value(yielded val) noexcept {
 				ptr = std::addressof(val);
-				return internal::yield_awaiter{};
+				return yield_awaiter{};
 			}
 
 			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> && std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> {
-				struct awaiter final : internal::yield_awaiter {
+				struct awaiter final : yield_awaiter {
 					std::remove_cvref_t<yielded> val;
 
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
 						self.promise().ptr = std::addressof(val);
-						return internal::yield_awaiter::await_suspend(self);
+						return yield_awaiter::await_suspend(self);
 					}
 				};
 				return awaiter{{}, lval};
@@ -342,6 +331,16 @@ namespace lazy {
 			void await_transform() =delete;
 
 			void return_void() const noexcept {}
+		private:
+			struct yield_awaiter {
+				static
+				auto await_ready() noexcept { return false; }
+				template<typename Promise>
+				static
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().parent_task; }
+				static
+				void await_resume() noexcept {}
+			};
 		};
 	private:
 		struct iterator final {
