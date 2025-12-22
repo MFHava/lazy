@@ -103,7 +103,7 @@ namespace lazy {
 
 
 		//! @brief internal accessor to handle
-		auto get_handle(auto & val) { return val.handle; }
+		auto get_handle(auto & val) noexcept { return val.handle; }
 
 
 		template<typename Other>
@@ -269,7 +269,7 @@ namespace lazy {
 		}
 
 		friend
-		auto internal::get_handle(auto &);
+		auto internal::get_handle(auto &) noexcept;
 
 		std::coroutine_handle<promise_type> handle;
 	};
@@ -370,7 +370,7 @@ namespace lazy {
 			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
 			friend
-			auto internal::get_handle(auto &);
+			auto internal::get_handle(auto &) noexcept;
 
 			std::coroutine_handle<promise_type> handle;
 		};
@@ -395,7 +395,7 @@ namespace lazy {
 		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
 
 		friend
-		auto internal::get_handle(auto &);
+		auto internal::get_handle(auto &) noexcept;
 
 		std::coroutine_handle<promise_type> handle;
 	};
