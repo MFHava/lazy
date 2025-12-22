@@ -28,6 +28,7 @@ namespace lazy {
 		};
 
 		struct promise_base {
+			//TODO: top and nested should be mutually exclusive
 			std::coroutine_handle<> top; //top of implicit stack
 			struct nested_info final {
 				std::exception_ptr eptr;        //needed for manual stack unwinding
@@ -129,45 +130,48 @@ namespace lazy {
 		struct iterator_awaiter final {
 			Other other;
 			promise_base::nested_info n;
-			std::coroutine_handle<> self;
-			std::coroutine_handle<> * top;
+			std::coroutine_handle<> prev_top;
+			std::coroutine_handle<> * top_of_root;
 
 			auto await_ready() const noexcept { return get_handle(other).done(); }
-			//TODO: document this stuff in more detail
+
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 				auto other_handle{get_handle(other)};
 				auto & other_promise{other_handle.promise()};
-
-				//! @attention store @c self to restore as @c top on resumption
-				this->self = self;
-				//! @attention store address of @c root->top to be able to set it on resumption
 				const auto & nested{self.promise().nested};
-				top = std::addressof(nested ? nested->root->top : self.promise().top);
-				//! @attention setup return target for generator's @c co_yield
+
+				//! @attention connect @c other 's @c co_yield with current coroutine frame
+				//! @note @c yield_target will never be reset, a once-started @c generator cannot be transfered to a different coroutine
 				if constexpr(Initial) other_promise.yield_target = self;
-				else assert(not other_promise.yield_target or other_promise.yield_target == self);
+				//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
 
-				other_promise.nested = std::addressof(n);
+				//! @attention store enough context (@c top and @c self ) to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
+				prev_top = self;
+				top_of_root = std::addressof(nested ? nested->root->top : self.promise().top);
+
+				//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
 				n.parent = self;
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_promise.top ? other_promise.top : other_handle;
+				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_promise.top;
+				other_promise.nested = std::addressof(n);
 
-				assert(n.root->top);
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
 			auto await_resume() noexcept {
 				auto other_handle{get_handle(other)};
+				auto & other_promise{other_handle.promise()};
 
-				auto & promise{other_handle.promise()};
-				promise.top = *top; //top of generator must point to logical top of stack
-				promise.ptr = decltype(other_handle)::from_address(top->address()).promise().ptr; //pointer to result must be copied to direct promise as we can't navigate to "top" later
-				promise.nested = nullptr; //we are no longer nested (TODO: redudant?)
+				//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
+				other_promise.top = *top_of_root;
 
-				//! @attention restore @c root->top from before suspension
-				*top = self;
+				//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root"
+				other_promise.ptr = decltype(other_handle)::from_address(top_of_root->address()).promise().ptr;
+
+				//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
+				*top_of_root = prev_top;
+
 				if(n.eptr) std::rethrow_exception(n.eptr);
-
 				if constexpr(Initial) return std::move(other);
 			}
 		};
@@ -293,6 +297,8 @@ namespace lazy {
 		struct promise_type final : internal::promise_base {
 			std::add_pointer_t<yielded> ptr;
 			std::coroutine_handle<> yield_target;
+
+			promise_type() { this->top = std::coroutine_handle<promise_type>::from_promise(*this); }
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
