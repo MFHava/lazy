@@ -103,25 +103,13 @@ TEST_CASE("generator fib", "[generator]") {
 			std::printf("\n");
 		}
 	}();
-	t.wait();
-
-	//auto it{fib.begin()};
-	//*it;
 
 
 #if 0
-	auto it{fib.begin()};
-	REQUIRE(*it == 0);
-	REQUIRE(*it == 1);
-	REQUIRE(*it == 1);
-	REQUIRE(*it == 2);
-	REQUIRE(*it == 3);
-	REQUIRE(*it == 5);
-	REQUIRE(*it == 8);
-	REQUIRE(*it == 13);
-	REQUIRE(*it == 21);
-	REQUIRE(*it == 34);
+	using namespace std::chrono_literals;
+	while(not t.wait_for(0ms)) printf(" ===== ");
+#else
+	t.wait();
 #endif
 }
-
 

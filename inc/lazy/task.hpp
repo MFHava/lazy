@@ -12,6 +12,8 @@
 #include <coroutine>
 #include <type_traits>
 
+//TODO: (especially) for generator: check all preconditions
+
 namespace lazy {
 	namespace internal {
 		struct progress_t final {
@@ -72,7 +74,7 @@ namespace lazy {
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 					if(const auto nested{self.promise().nested}) {
 						nested->root->top = nested->parent;
-						/*TODO: if(not nested->root->must_suspend())*/ return nested->root->top;
+						if(not nested->root->must_suspend()) return nested->root->top;
 					}
 					return std::noop_coroutine();
 				}
@@ -114,7 +116,7 @@ namespace lazy {
 				n.parent = self;
 				auto nested{self.promise().nested};
 				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle;
-				return /*TODO: n.root->must_suspend() ? std::noop_coroutine() :*/ n.root->top;
+				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
 			auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ { //TODO: remove precondition?
@@ -147,7 +149,7 @@ namespace lazy {
 				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other.handle.promise().top ? other.handle.promise().top : other.handle;
 
 				assert(n.root->top);
-				return /*TODO: n.root->must_suspend() ? std::noop_coroutine() :*/ n.root->top;
+				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
 			auto await_resume() const noexcept -> bool {
@@ -264,8 +266,6 @@ namespace lazy {
 	};
 
 
-//TODO: still sync generator
-
 	namespace ranges {
 		template</*TODO std::ranges::range*/ typename Range>
 		struct elements_of {
@@ -273,7 +273,7 @@ namespace lazy {
 		};
 
 		template<typename Range>
-		elements_of(Range &&) -> elements_of<Range &&>; //TODO: necessary?!
+		elements_of(Range &&) -> elements_of<Range &&>;
 	}
 
 	//! @brief lazy view of elements yielded by a coroutine
@@ -297,8 +297,8 @@ namespace lazy {
 		using yielded = std::conditional_t<std::is_reference_v<reference>, reference, const reference &>;
 
 		struct promise_type final : internal::promise_base {
-			std::add_pointer_t<yielded> ptr{nullptr};
-			std::coroutine_handle<> parent_task;
+			std::add_pointer_t<yielded> ptr;
+			std::coroutine_handle<> parent_task; //TODO: better name
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
 
@@ -350,16 +350,9 @@ namespace lazy {
 				return *this;
 			}
 
-			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference {
-				//TODO: [C++??] precondition(!handle.done());
-				return static_cast<reference>(*handle.promise().ptr);
-			}
+			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
-			auto operator++() -> iterator & {
-				//TODO: [C++??] precondition(!handle.done());
-				return *this;
-			}
-			void operator++(int) { ++*this; }
+			auto operator++() -> iterator & /*TODO: [C++26] pre(not handle.done())*/ { return *this; }
 
 			friend
 			auto operator!=(const iterator & i, std::default_sentinel_t) { return internal::iterator{i}; }
@@ -390,7 +383,7 @@ namespace lazy {
 		generator(std::coroutine_handle<promise_type> handle) : handle{std::move(handle)} {}
 
 	public: //TODO: remove
-		std::coroutine_handle<promise_type> handle{nullptr}; //exposition only
+		std::coroutine_handle<promise_type> handle;
 	};
 }
 
