@@ -352,7 +352,7 @@ namespace lazy {
 
 			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
-			auto operator++() -> iterator & /*TODO: [C++26] pre(not handle.done())*/ { return *this; }
+			void operator++() /*TODO: [C++26] pre(not handle.done())*/ {}
 
 			friend
 			auto operator!=(const iterator & self, std::default_sentinel_t) { return internal::iterator_awaiter<const iterator &>{self}; }
