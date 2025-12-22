@@ -27,9 +27,6 @@ namespace lazy {
 			bool (*fptr)(const void *) noexcept;
 		};
 
-		template<typename T>
-		struct iterator final { const T & it; };
-
 		struct promise_base {
 			std::coroutine_handle<> top; //top of implicit stack
 			struct nested_info final {
@@ -215,7 +212,7 @@ namespace lazy {
 
 			template<typename U>
 			static
-			auto await_transform(internal::iterator<U> other) { return internal::iterator_awaiter<const U &>{other.it}; }
+			auto await_transform(internal::iterator_awaiter<U> other) { return other; }
 		};
 
 		auto valueless() const noexcept -> bool { return !handle; }
@@ -362,7 +359,7 @@ namespace lazy {
 			auto operator++() -> iterator & /*TODO: [C++26] pre(not handle.done())*/ { return *this; }
 
 			friend
-			auto operator!=(const iterator & i, std::default_sentinel_t) { return internal::iterator{i}; }
+			auto operator!=(const iterator & self, std::default_sentinel_t) { return internal::iterator_awaiter<const iterator &>{self}; }
 		private:
 			friend generator;
 			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
