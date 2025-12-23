@@ -52,8 +52,11 @@ static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generato
 
 auto yolo() -> lazy::generator<char> {
 	co_yield co_await []() -> lazy::task<char> { co_return 'x'; }() + 1;
-	co_yield 'o';
-	co_yield 'l';
+	auto gen = []() -> lazy::generator<char> {
+		co_yield 'n';
+		co_yield co_await []() -> lazy::task<char> { co_return 'k'; }();
+	}();
+	for(auto it = co_await gen.begin(); it != gen.end(); co_await ++it) co_yield *it + 1;
 	co_yield 'o';
 }
 

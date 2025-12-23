@@ -80,6 +80,62 @@ namespace lazy {
 				};
 				return awaiter{std::move(other)};
 			}
+
+			template<typename Other, bool Initial>
+			struct iterator_awaiter final {
+				Other other;
+				promise_base::nested_info n;
+				std::coroutine_handle<> prev_top;
+				std::coroutine_handle<> * top_of_root;
+
+				auto await_ready() const noexcept { return get_handle(other).done(); }
+
+				template<typename Promise>
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+					auto other_handle{get_handle(other)};
+					auto & other_promise{other_handle.promise()};
+					const auto & nested{self.promise().nested};
+
+					//! @attention connect @c other 's @c co_yield with current coroutine frame
+					//! @note @c yield_target will never be reset, a once-started @c generator cannot be transfered to a different coroutine
+					if constexpr(Initial) other_promise.yield_target = self;
+					//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
+
+					//! @attention store enough context (@c top and @c self ) to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
+					prev_top = self;
+					top_of_root = std::addressof(nested ? nested->root->top : self.promise().top);
+
+					//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
+					n.parent = self;
+					(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_promise.top;
+					other_promise.nested = std::addressof(n);
+
+					return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
+				}
+
+				auto await_resume() {
+					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
+					if(n.eptr) std::rethrow_exception(n.eptr);
+
+					auto other_handle{get_handle(other)};
+					auto & other_promise{other_handle.promise()};
+
+					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
+					other_promise.top = *top_of_root;
+
+					//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root" (only valid if resumption was due to yield)
+					if(not other_handle.done()) other_promise.ptr = decltype(other_handle)::from_address(top_of_root->address()).promise().ptr;
+
+					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
+					*top_of_root = prev_top;
+
+					if constexpr(Initial) return std::move(other);
+				}
+			};
+
+			template<typename U, bool V>
+			static
+			auto await_transform(iterator_awaiter<U, V> other) { return other; }
 		private:
 			struct pop_awaiter final {
 				static
@@ -137,59 +193,6 @@ namespace lazy {
 			static
 			void return_void() noexcept {}
 		};
-
-
-		template<typename Other, bool Initial>
-		struct iterator_awaiter final {
-			Other other;
-			promise_base::nested_info n;
-			std::coroutine_handle<> prev_top;
-			std::coroutine_handle<> * top_of_root;
-
-			auto await_ready() const noexcept { return get_handle(other).done(); }
-
-			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-				auto other_handle{get_handle(other)};
-				auto & other_promise{other_handle.promise()};
-				const auto & nested{self.promise().nested};
-
-				//! @attention connect @c other 's @c co_yield with current coroutine frame
-				//! @note @c yield_target will never be reset, a once-started @c generator cannot be transfered to a different coroutine
-				if constexpr(Initial) other_promise.yield_target = self;
-				//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
-
-				//! @attention store enough context (@c top and @c self ) to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
-				prev_top = self;
-				top_of_root = std::addressof(nested ? nested->root->top : self.promise().top);
-
-				//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
-				n.parent = self;
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = other_promise.top;
-				other_promise.nested = std::addressof(n);
-
-				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
-			}
-
-			auto await_resume() {
-				//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
-				if(n.eptr) std::rethrow_exception(n.eptr);
-
-				auto other_handle{get_handle(other)};
-				auto & other_promise{other_handle.promise()};
-
-				//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-				other_promise.top = *top_of_root;
-
-				//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root" (only valid if resumption was due to yield)
-				if(not other_handle.done()) other_promise.ptr = decltype(other_handle)::from_address(top_of_root->address()).promise().ptr;
-
-				//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
-				*top_of_root = prev_top;
-
-				if constexpr(Initial) return std::move(other);
-			}
-		};
 	}
 
 	//! @brief tag to yield progress within a @c task
@@ -210,12 +213,6 @@ namespace lazy {
 			promise_type() { this->top = std::coroutine_handle<promise_type>::from_promise(*this); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-
-			using internal::promise_base::await_transform;
-
-			template<typename U, bool V>
-			static
-			auto await_transform(internal::iterator_awaiter<U, V> other) { return other; }
 		};
 
 		auto valueless() const noexcept -> bool { return not handle; }
@@ -342,7 +339,6 @@ namespace lazy {
 			}
 
 			//TODO: support for co_yield task??
-			//TODO: support for `for co_wait`?
 
 			void return_void() const noexcept {}
 		private:
@@ -370,7 +366,7 @@ namespace lazy {
 
 			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
-			auto operator++() /*TODO: [C++26] pre(not handle.done())*/ { return internal::iterator_awaiter<iterator &, false>{*this}; }
+			auto operator++() /*TODO: [C++26] pre(not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
 
 			friend
 			auto operator==(const iterator & self, std::default_sentinel_t) noexcept -> bool { return self.handle.done(); }
@@ -386,7 +382,7 @@ namespace lazy {
 	public:
 		auto valueless() const noexcept -> bool { return not handle; }
 
-		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
+		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::promise_base::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 
