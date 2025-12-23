@@ -12,8 +12,6 @@
 #include <coroutine>
 #include <type_traits>
 
-//TODO: (especially) for generator: check all preconditions
-
 namespace lazy {
 	template<typename>
 	struct task;
@@ -69,13 +67,13 @@ namespace lazy {
 				return awaiter{suspend ? suspend->fptr(suspend->ctx) : false};
 			}
 
-			template<typename U>
+			template<typename T>
 			static
-			auto await_transform(task<U> other) /*TODO: [C++26] pre(not other.valueless())*/ {
-				struct awaiter : push_awaiter<task<U>> {
-					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
-						push_awaiter<task<U>>::await_resume();
-						if constexpr(not std::is_void_v<U>) return std::move(*internal::get_handle(this->other).promise().result);
+			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
+				struct awaiter : push_awaiter<task<T>> {
+					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.handle.done())*/ {
+						push_awaiter<task<T>>::await_resume();
+						if constexpr(not std::is_void_v<T>) return std::move(*internal::get_handle(this->other).promise().result);
 					}
 				};
 				return awaiter{std::move(other)};
@@ -133,9 +131,9 @@ namespace lazy {
 				}
 			};
 
-			template<typename U, bool V>
+			template<typename T, bool U>
 			static
-			auto await_transform(iterator_awaiter<U, V> other) { return other; }
+			auto await_transform(iterator_awaiter<T, U> other) { return other; }
 		private:
 			struct pop_awaiter final {
 				static
@@ -179,8 +177,6 @@ namespace lazy {
 
 		template<typename T>
 		struct task_promise : promise_base {
-			static_assert(std::is_object_v<T> and std::is_same_v<std::decay_t<T>, T>); //disqualify cv T &, T[], ...
-
 			//! @note result of computation, only set once task is done
 			std::optional<T> result;
 
@@ -195,21 +191,23 @@ namespace lazy {
 		};
 	}
 
-	//! @brief tag to yield progress within a @c task
+	//! @brief tag to yield progress within a @c task or @c generator
 	inline
 	constexpr
 	internal::progress_t progress{1};
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
-	//TODO: documentation for template parameter
+	//! @tparam Result return type of the task
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
+	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
-	//TODO: support for `for co_await`
-	template<typename T> //TODO: allocator support, default argument for T? (better name for T?)
+	template<typename Result = void>
 	struct task final {
-		struct promise_type final : internal::task_promise<T> {
+		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
+
+		struct promise_type final : internal::task_promise<Result> {
 			promise_type() { this->top = std::coroutine_handle<promise_type>::from_promise(*this); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
@@ -230,16 +228,19 @@ namespace lazy {
 			if(handle.done()) return true;
 			auto & promise{handle.promise()};
 			using Time = std::remove_reference_t<decltype(time)>;
-			internal::function_ref s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }};
-			promise.suspend = &s;
+			internal::function_ref f{
+				.ctx = std::addressof(time),
+				.fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }
+			};
+			promise.suspend = &f;
 			resume(promise.top);
 			promise.suspend = nullptr;
 			return handle.done();
 		}
 
-		auto get() -> std::add_lvalue_reference_t<T> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
+		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
 			wait();
-			if constexpr(not std::is_void_v<T>) return *handle.promise().result;
+			if constexpr(not std::is_void_v<Result>) return *handle.promise().result;
 		}
 
 		task(task && other) noexcept : handle{std::exchange(other.handle, {})} {}
@@ -278,9 +279,14 @@ namespace lazy {
 	}
 
 	//! @brief lazy view of elements yielded by a coroutine
-	//! @tparam Reference TODO
-	//! @tparam Value TODO
-	//TODO: document supported syntax
+	//! @tparam Reference reference type of generator
+	//! @tparam Value value type of the generator
+	//! supported coroutine statements:
+	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
+	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
+	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited task is completed, optionally receiving a value
+	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generatro until awaited generator yields next value
+	//TODO: support for `co_yield ranges::elements_of{g};`
 	template<typename Reference, typename Value = void>
 	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
@@ -323,15 +329,15 @@ namespace lazy {
 				return awaiter{{}, lval};
 			}
 
-			template<typename R2, typename V2>
-			requires std::same_as<typename generator<R2, V2>::yielded, yielded>
-			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
+			template<typename R, typename V>
+			requires std::same_as<typename generator<R, V>::yielded, yielded>
+			auto yield_value(ranges::elements_of<generator<R, V> &&> g) noexcept { //TODO: remove need for ranges::elements_of??
 				g.range.handle.promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter<generator<R2, V2>>{std::move(g.range)};
+				return internal::promise_base::push_awaiter<generator<R, V>>{std::move(g.range)};
 			}
 
 			template<std::ranges::input_range R>
-			requires std::convertible_to<std::ranges::range_reference_t<R>, yielded>
+			requires std::convertible_to<std::ranges::range_reference_t<R>, yielded> //TODO: remove?? (or use std::ranges::elements_of) ??
 			auto yield_value(ranges::elements_of<R> r) noexcept {
 				auto wrapped{[](std::ranges::iterator_t<R> i, std::ranges::sentinel_t<R> s) -> generator<yielded, std::ranges::range_value_t<R>> { for (; i != s; ++i) co_yield static_cast<yielded>(*i); }};
 				return yield_value(ranges::elements_of(wrapped(std::ranges::begin(r.range), std::ranges::end(r.range))));
@@ -350,6 +356,7 @@ namespace lazy {
 			};
 		};
 	private:
+		//! @brief lazy iterator for elements yielded by a coroutine
 		struct iterator final {
 			using value_type = value;
 			using difference_type = std::ptrdiff_t;
@@ -361,12 +368,13 @@ namespace lazy {
 			}
 			~iterator() noexcept { if(handle) handle.destroy(); }
 
-			auto operator*() const noexcept(std::is_nothrow_copy_constructible_v<reference>) -> reference /*TODO: [C++26] pre(not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
+			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
-			auto operator++() /*TODO: [C++26] pre(not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
+			//! @returns awaiter for lazy increment
+			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
 
 			friend
-			auto operator==(const iterator & self, std::default_sentinel_t) noexcept -> bool { return self.handle.done(); }
+			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); } //TODO: alternative to precondition: not self.handle == sentinel
 		private:
 			friend generator;
 			friend
@@ -379,6 +387,8 @@ namespace lazy {
 	public:
 		auto valueless() const noexcept -> bool { return not handle; }
 
+		//! @returns awaiter for the initial iterator
+		//! @attention transfers ownership of the managed coroutine to the resulting iterator
 		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::promise_base::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
