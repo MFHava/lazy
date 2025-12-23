@@ -82,7 +82,7 @@ namespace lazy {
 			}
 
 			template<typename Other, bool Initial>
-			struct iterator_awaiter final {
+			struct iterator_awaiter final { //TODO: add contracts
 				Other other;
 				promise_base::nested_info n;
 				std::coroutine_handle<> prev_top;
@@ -326,7 +326,6 @@ namespace lazy {
 			template<typename R2, typename V2>
 			requires std::same_as<typename generator<R2, V2>::yielded, yielded>
 			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
-				assert(not g.range.handle.promise().yield_target);
 				g.range.handle.promise().yield_target = yield_target;
 				return internal::promise_base::push_awaiter<generator<R2, V2>>{std::move(g.range)};
 			}
@@ -337,8 +336,6 @@ namespace lazy {
 				auto wrapped{[](std::ranges::iterator_t<R> i, std::ranges::sentinel_t<R> s) -> generator<yielded, std::ranges::range_value_t<R>> { for (; i != s; ++i) co_yield static_cast<yielded>(*i); }};
 				return yield_value(ranges::elements_of(wrapped(std::ranges::begin(r.range), std::ranges::end(r.range))));
 			}
-
-			//TODO: support for co_yield task??
 
 			void return_void() const noexcept {}
 		private:
