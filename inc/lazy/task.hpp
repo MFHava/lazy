@@ -120,7 +120,7 @@ namespace lazy {
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
-			auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ { //TODO: remove precondition?
+			auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
 				if(n.eptr) std::rethrow_exception(n.eptr);
 			}
 		};
@@ -233,7 +233,7 @@ namespace lazy {
 			internal::function_ref s{.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }};
 			promise.suspend = &s;
 			resume(promise.top);
-			promise.suspend = nullptr; //TODO: redundant?
+			promise.suspend = nullptr;
 			return handle.done();
 		}
 
