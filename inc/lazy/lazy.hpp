@@ -71,7 +71,7 @@ namespace lazy {
 
 			template<typename U>
 			static
-			auto await_transform(task<U> && other) /*TODO: [C++26] pre(not other.valueless())*/ {
+			auto await_transform(task<U> other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter : push_awaiter<task<U>> {
 					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
 						push_awaiter<task<U>>::await_resume();
@@ -84,7 +84,7 @@ namespace lazy {
 			template<typename Other, bool Initial>
 			struct iterator_awaiter final { //TODO: add contracts
 				Other other;
-				promise_base::nested_info n;
+				nested_info n;
 				std::coroutine_handle<> prev_top;
 				std::coroutine_handle<> * top_of_root;
 
@@ -158,7 +158,7 @@ namespace lazy {
 			template<typename Other>
 			struct push_awaiter {
 				Other other;
-				promise_base::nested_info n;
+				nested_info n;
 
 				auto await_ready() const noexcept { return get_handle(other).done(); }
 
@@ -356,7 +356,7 @@ namespace lazy {
 
 			iterator(iterator && other) noexcept : handle{std::exchange(other.handle, {})} {}
 			auto operator=(iterator && other) noexcept -> iterator & {
-				handle = std::exchange(other.handle, {});
+				std::swap(handle, other.handle);
 				return *this;
 			}
 			~iterator() noexcept { if(handle) handle.destroy(); }
