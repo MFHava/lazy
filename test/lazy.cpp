@@ -5,7 +5,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #include <catch2/catch_test_macros.hpp>
-#include <lazy/task.hpp>
+#include <lazy/lazy.hpp>
 
 TEST_CASE("trivial", "[lazy]") {
 	auto t{[]() -> lazy::task<int> { co_return 1; }()};
