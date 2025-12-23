@@ -158,7 +158,10 @@ namespace lazy {
 				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
 			}
 
-			auto await_resume() noexcept {
+			auto await_resume() {
+				//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
+				if(n.eptr) std::rethrow_exception(n.eptr);
+
 				auto other_handle{get_handle(other)};
 				auto & other_promise{other_handle.promise()};
 
@@ -171,7 +174,6 @@ namespace lazy {
 				//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
 				*top_of_root = prev_top;
 
-				if(n.eptr) std::rethrow_exception(n.eptr);
 				if constexpr(Initial) return std::move(other);
 			}
 		};
