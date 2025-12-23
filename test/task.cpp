@@ -51,7 +51,7 @@ TEST_CASE("nesting", "[lazy]") {
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 
 auto yolo() -> lazy::generator<char> {
-	co_yield 'y';
+	co_yield co_await []() -> lazy::task<char> { co_return 'x'; }() + 1;
 	co_yield 'o';
 	co_yield 'l';
 	co_yield 'o';

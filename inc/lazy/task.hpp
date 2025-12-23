@@ -15,7 +15,13 @@
 //TODO: (especially) for generator: check all preconditions
 
 namespace lazy {
+	template<typename>
+	struct task;
+
 	namespace internal {
+		//! @brief internal accessor to handle
+		auto get_handle(auto & val) noexcept { return val.handle; }
+
 		struct progress_t final {
 			constexpr
 			explicit
@@ -62,6 +68,18 @@ namespace lazy {
 				};
 				return awaiter{suspend ? suspend->fptr(suspend->ctx) : false};
 			}
+
+			template<typename U>
+			static
+			auto await_transform(task<U> && other) /*TODO: [C++26] pre(not other.valueless())*/ {
+				struct awaiter : push_awaiter<task<U>> {
+					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
+						push_awaiter<task<U>>::await_resume();
+						if constexpr(not std::is_void_v<U>) return std::move(*internal::get_handle(this->other).promise().result);
+					}
+				};
+				return awaiter{std::move(other)};
+			}
 		private:
 			struct pop_awaiter final {
 				static
@@ -80,6 +98,27 @@ namespace lazy {
 				static
 				void await_resume() noexcept {}
 			};
+		protected:
+			template<typename Other>
+			struct push_awaiter {
+				Other other;
+				promise_base::nested_info n;
+
+				auto await_ready() const noexcept { return get_handle(other).done(); }
+
+				template<typename Promise>
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+					get_handle(other).promise().nested = std::addressof(n);
+					n.parent = self;
+					auto nested{self.promise().nested};
+					(n.root = nested ? nested->root : std::addressof(self.promise()))->top = get_handle(other);
+					return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
+				}
+
+				auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
+					if(n.eptr) std::rethrow_exception(n.eptr);
+				}
+			};
 		};
 
 		template<typename T>
@@ -97,32 +136,6 @@ namespace lazy {
 		struct task_promise<void> : promise_base {
 			static
 			void return_void() noexcept {}
-		};
-
-
-		//! @brief internal accessor to handle
-		auto get_handle(auto & val) noexcept { return val.handle; }
-
-
-		template<typename Other>
-		struct push_awaiter {
-			Other other;
-			promise_base::nested_info n;
-
-			auto await_ready() const noexcept { return get_handle(other).done(); }
-
-			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-				get_handle(other).promise().nested = std::addressof(n);
-				n.parent = self;
-				auto nested{self.promise().nested};
-				(n.root = nested ? nested->root : std::addressof(self.promise()))->top = get_handle(other);
-				return n.root->must_suspend() ? std::noop_coroutine() : n.root->top;
-			}
-
-			auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
-				if(n.eptr) std::rethrow_exception(n.eptr);
-			}
 		};
 
 
@@ -198,17 +211,7 @@ namespace lazy {
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
-			template<typename U>
-			static
-			auto await_transform(task<U> && other) /*TODO: [C++26] pre(not other.valueless())*/ {
-				struct awaiter : internal::push_awaiter<task<U>> {
-					auto await_resume() const -> std::add_rvalue_reference_t<U> /*TODO: [C++26] pre(other.handle.done())*/ {
-						internal::push_awaiter<task<U>>::await_resume();
-						if constexpr(not std::is_void_v<U>) return std::move(*internal::get_handle(this->other).promise().result);
-					}
-				};
-				return awaiter{std::move(other)};
-			}
+			using internal::promise_base::await_transform;
 
 			template<typename U, bool V>
 			static
@@ -328,7 +331,7 @@ namespace lazy {
 			auto yield_value(ranges::elements_of<generator<R2, V2> &&> g) noexcept {
 				assert(not g.range.handle.promise().yield_target);
 				g.range.handle.promise().yield_target = yield_target;
-				return internal::push_awaiter<generator<R2, V2>>{std::move(g.range)};
+				return internal::promise_base::push_awaiter<generator<R2, V2>>{std::move(g.range)};
 			}
 
 			template<std::ranges::input_range R>
@@ -338,10 +341,8 @@ namespace lazy {
 				return yield_value(ranges::elements_of(wrapped(std::ranges::begin(r.range), std::ranges::end(r.range))));
 			}
 
-			//TODO: support for task??
+			//TODO: support for co_yield task??
 			//TODO: support for `for co_wait`?
-
-			void await_transform() =delete;
 
 			void return_void() const noexcept {}
 		private:
