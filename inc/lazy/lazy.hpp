@@ -122,7 +122,7 @@ namespace lazy {
 					other_promise.top = *top_of_root;
 
 					//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root" (only valid if resumption was due to yield)
-					if(not other_handle.done()) other_promise.ptr = decltype(other_handle)::from_address(top_of_root->address()).promise().ptr;
+					if(not other_handle.done()) other_promise.ptr = other_handle.from_address(top_of_root->address()).promise().ptr;
 
 					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
 					*top_of_root = prev_top;
