@@ -250,7 +250,6 @@ namespace lazy {
 		}
 		~task() noexcept { if(handle) handle.destroy(); }
 	private:
-		friend promise_type;
 		friend
 		auto internal::get_handle(auto &) noexcept;
 
@@ -379,7 +378,8 @@ namespace lazy {
 			friend
 			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); } //TODO: alternative to precondition: not self.handle == sentinel
 		private:
-			friend generator;
+			friend
+			generator;
 			friend
 			auto internal::get_handle(auto &) noexcept;
 
@@ -403,7 +403,6 @@ namespace lazy {
 		}
 		~generator() noexcept { if(handle) handle.destroy(); }
 	private:
-		friend promise_type;
 		friend
 		auto internal::get_handle(auto &) noexcept;
 
