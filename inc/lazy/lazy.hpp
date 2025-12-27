@@ -58,6 +58,7 @@ namespace lazy {
 			}
 			void set_nested(nested_info & nested) { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
 
+			//TODO: way to make this member optional for all promises but root? (merge into data for root??)
 			function_ref * suspend{nullptr}; //callback to check for suspension on co_yield  - nullptr => never suspend
 			auto must_suspend() const -> bool /*TODO: [C++26] pre(is_top())*/ { return suspend ? suspend->fptr(suspend->ctx) : false; }
 
@@ -378,7 +379,7 @@ namespace lazy {
 		};
 	private:
 		//! @brief lazy iterator for elements yielded by a coroutine
-		struct iterator final {
+		struct iterator final { //TODO: add remarks about association to initial awaiter (yield_target)
 			using value_type = value;
 			using difference_type = std::ptrdiff_t;
 
