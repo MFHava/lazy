@@ -52,7 +52,7 @@ namespace lazy {
 			void set_top(std::uintptr_t & data, std::coroutine_handle<> handle) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
 			void set_top(std::coroutine_handle<> handle) { set_top(data, handle); }
 
-			auto get_nested() -> nested_info * {
+			auto get_nested() const -> nested_info * {
 				if(is_top(data)) return nullptr;
 				return reinterpret_cast<nested_info *>(data ^ 1U);
 			}
@@ -83,7 +83,9 @@ namespace lazy {
 					static
 					void await_resume() noexcept {}
 				};
-				return awaiter{suspend ? suspend->fptr(suspend->ctx) : false};
+
+				auto nested{get_nested()};
+				return awaiter{(nested ? nested->root : this)->must_suspend()};
 			}
 
 			template<typename T>
@@ -372,7 +374,7 @@ namespace lazy {
 				auto await_ready() noexcept { return false; }
 				template<typename Promise>
 				static
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; }
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; } //TODO: check for additional suspension?
 				static
 				void await_resume() noexcept {}
 			};
