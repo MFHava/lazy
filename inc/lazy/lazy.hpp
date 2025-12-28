@@ -372,16 +372,17 @@ namespace lazy {
 			struct yield_awaiter {
 				static
 				auto await_ready() noexcept { return false; }
+				//! @note does not check for suspension, as we need to jump back to @c yield_target
 				template<typename Promise>
 				static
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; } //TODO: check for additional suspension?
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; }
 				static
 				void await_resume() noexcept {}
 			};
 		};
 	private:
 		//! @brief lazy iterator for elements yielded by a coroutine
-		struct iterator final { //TODO: add remarks about association to initial awaiter (yield_target)
+		struct iterator final {
 			using value_type = value;
 			using difference_type = std::ptrdiff_t;
 
@@ -395,6 +396,7 @@ namespace lazy {
 			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
 
 			//! @returns awaiter for lazy increment
+			//! @attention the returned awaiter must be awaited on on the coroutine that initially awaited @c generator::begin
 			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
 
 			friend
@@ -414,6 +416,7 @@ namespace lazy {
 
 		//! @returns awaiter for the initial iterator
 		//! @attention transfers ownership of the managed coroutine to the resulting iterator
+		//! @attention the returned iterator is bound to the calling coroutine
 		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::promise_base::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
