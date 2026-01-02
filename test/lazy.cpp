@@ -47,7 +47,6 @@ TEST_CASE("nesting", "[lazy]") {
 }
 
 //TODO: timed waiting, etc.
-
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 
 auto yolo() -> lazy::generator<char> {
@@ -115,4 +114,3 @@ TEST_CASE("generator fib", "[generator]") {
 	t.wait();
 #endif
 }
-

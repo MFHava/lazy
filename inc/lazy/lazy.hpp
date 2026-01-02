@@ -26,7 +26,9 @@ namespace lazy {
 			progress_t(int) noexcept {}
 		};
 
-		struct function_ref final {
+		struct active_root final {
+			std::coroutine_handle<> top;
+
 			const void * ctx;
 			bool (*fptr)(const void *) noexcept;
 		};
@@ -40,17 +42,13 @@ namespace lazy {
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
 
-			//! @note tagged "union" between @c std::coroutine_handle<>::address() and @c nested_info *
+			//! @note tagged "union" between @c std::coroutine_handle<>::address() , @c active_root* and @c nested_info*
 			//! @attention LSB set => nested_info *
+			//! @attention only @c active_root* for "root"-task
 			std::uintptr_t data;
 
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
 			void set_nested(nested_info & nested) /*TODO: [C++26] post(not (data & 1U))*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
-
-			//TODO: way to make this member optional for all promises but root? (merge into data for root??)
-			function_ref * suspend{nullptr}; //callback to check for suspension on co_yield  - nullptr => never suspend
-			auto must_suspend() const -> bool /*TODO: [C++26] pre(is_top())*/ { return suspend ? suspend->fptr(suspend->ctx) : false; }
-
 
 			static
 			auto initial_suspend() noexcept -> std::suspend_always { return {}; }
@@ -74,7 +72,8 @@ namespace lazy {
 				};
 
 				auto nested{get_nested()};
-				return awaiter{(nested ? nested->root : this)->must_suspend()};
+				auto ar{reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
+				return awaiter{ar->fptr(ar->ctx)};
 			}
 
 			template<typename T>
@@ -94,7 +93,6 @@ namespace lazy {
 				Other other;
 				nested_info n;
 				std::coroutine_handle<> prev_top;
-				std::uintptr_t * top_of_root;
 
 				auto await_ready() const noexcept { return get_handle(other).done(); }
 
@@ -111,15 +109,16 @@ namespace lazy {
 
 					//! @attention store enough context (@c top and @c self ) to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
 					prev_top = self;
-					top_of_root = std::addressof(nested ? nested->root->data : self.promise().data);
-					//TODO: [C++26] contract_assert(promise_base::is_top(*top_of_root));;
 
 					//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
 					n.parent = self;
-					(n.root = nested ? nested->root : std::addressof(self.promise()))->data = other_promise.data;
+
+					n.root = nested ? nested->root : std::addressof(self.promise());
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
 					other_promise.set_nested(n);
 
-					return n.root->must_suspend() ? std::noop_coroutine() : std::coroutine_handle<>::from_address(reinterpret_cast<void *>(n.root->data));
+					return ar->fptr(ar->ctx) ? std::noop_coroutine() : ar->top;
 				}
 
 				auto await_resume() {
@@ -128,15 +127,16 @@ namespace lazy {
 
 					auto other_handle{get_handle(other)};
 					auto & other_promise{other_handle.promise()};
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 
 					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-					other_promise.data = *top_of_root;
+					other_promise.data = reinterpret_cast<std::uintptr_t>(ar->top.address());
 
 					//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root" (only valid if resumption was due to yield)
-					if(not other_handle.done()) other_promise.ptr = other_handle.from_address(reinterpret_cast<void *>(*top_of_root)).promise().ptr;
+					if(not other_handle.done()) other_promise.ptr = other_handle.from_address(reinterpret_cast<void *>(other_promise.data)).promise().ptr;
 
 					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
-					*top_of_root = reinterpret_cast<std::uintptr_t>(prev_top.address());
+					ar->top = prev_top;
 
 					if constexpr(Initial) return std::move(other);
 				}
@@ -154,8 +154,9 @@ namespace lazy {
 				static
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 					if(const auto nested{self.promise().get_nested()}) {
-						nested->root->data = reinterpret_cast<std::uintptr_t>(nested->parent.address());
-						if(not nested->root->must_suspend()) return std::coroutine_handle<>::from_address(reinterpret_cast<void *>( nested->root->data));
+						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
+						ar->top = nested->parent;
+						if(not ar->fptr(ar->ctx)) return ar->top;
 					}
 					return std::noop_coroutine();
 				}
@@ -176,8 +177,11 @@ namespace lazy {
 					get_handle(other).promise().set_nested(n);
 					n.parent = self;
 					auto nested{self.promise().get_nested()};
-					(n.root = nested ? nested->root : std::addressof(self.promise()))->data = reinterpret_cast<std::uintptr_t>(get_handle(other).address());
-					return n.root->must_suspend() ? std::noop_coroutine() : std::coroutine_handle<>::from_address(reinterpret_cast<void *>(n.root->data));
+					n.root = nested ? nested->root : std::addressof(self.promise());
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+					ar->top = get_handle(other);
+					return ar->fptr(ar->ctx) ? std::noop_coroutine()
+							: ar->top;
 				}
 
 				auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
@@ -226,7 +230,15 @@ namespace lazy {
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ { if(not handle.done()) resume(std::coroutine_handle<>::from_address(reinterpret_cast<void *>(handle.promise().data))); }
+		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
+			if(handle.done()) return;
+			auto & promise{handle.promise()};
+			internal::active_root ar{
+				.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
+				.fptr = [](const void *) noexcept { return false; }
+			};
+			resume(ar);
+		}
 
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
@@ -237,15 +249,14 @@ namespace lazy {
 			static_assert(std::chrono::is_clock_v<Clock>);
 #endif
 			if(handle.done()) return true;
-			auto & promise{handle.promise()};
 			using Time = std::remove_reference_t<decltype(time)>;
-			internal::function_ref f{
+			auto & promise{handle.promise()};
+			internal::active_root ar{
+				.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
 				.ctx = std::addressof(time),
 				.fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }
 			};
-			promise.suspend = &f;
-			resume(promise.get_top());
-			promise.suspend = nullptr;
+			resume(ar);
 			return handle.done();
 		}
 
@@ -266,9 +277,13 @@ namespace lazy {
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
-		void resume(std::coroutine_handle<> top) /*TODO: [C++26] pre(top and not top.done())*/ {
-			try { top.resume(); }
-			catch(...) {
+		void resume(internal::active_root & ar) /*TODO: [C++26] pre(ar.top and not ar.top.done())*/ {
+			try {
+				auto & promise{handle.promise()};
+				promise.data = reinterpret_cast<std::uintptr_t>(std::addressof(ar));
+				ar.top.resume();
+				promise.data = reinterpret_cast<std::uintptr_t>(ar.top.address());
+			} catch(...) {
 				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
 				throw;
 			}
