@@ -230,15 +230,7 @@ namespace lazy {
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
-			if(handle.done()) return;
-			auto & promise{handle.promise()};
-			internal::active_root ar{
-				.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
-				.fptr = [](const void *) noexcept { return false; }
-			};
-			resume(ar);
-		}
+		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ { if(not handle.done()) resume({.fptr = [](const void *) noexcept { return false; }}); }
 
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
@@ -249,14 +241,7 @@ namespace lazy {
 			static_assert(std::chrono::is_clock_v<Clock>);
 #endif
 			if(handle.done()) return true;
-			using Time = std::remove_reference_t<decltype(time)>;
-			auto & promise{handle.promise()};
-			internal::active_root ar{
-				.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
-				.ctx = std::addressof(time),
-				.fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<Time *>(ptr); }
-			};
-			resume(ar);
+			resume({.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<std::remove_reference_t<decltype(time)> *>(ptr); }});
 			return handle.done();
 		}
 
@@ -277,9 +262,11 @@ namespace lazy {
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
-		void resume(internal::active_root & ar) /*TODO: [C++26] pre(ar.top and not ar.top.done())*/ {
+		void resume(internal::active_root ar) {
 			try {
 				auto & promise{handle.promise()};
+				ar.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data));
+				//TODO: [C++26] contract_assert(ar.top and not ar.top.done());
 				promise.data = reinterpret_cast<std::uintptr_t>(std::addressof(ar));
 				ar.top.resume();
 				promise.data = reinterpret_cast<std::uintptr_t>(ar.top.address());
