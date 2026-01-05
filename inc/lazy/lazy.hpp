@@ -33,8 +33,6 @@ namespace lazy {
 			bool (*fptr)(const void *) noexcept;
 		};
 
-		//TODO: struct root to merge top coroutine_handle<> and function_ref * during execution
-
 		struct promise_base {
 			struct nested_info final {
 				std::exception_ptr eptr;        //needed for manual stack unwinding
@@ -42,9 +40,10 @@ namespace lazy {
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
 
-			//! @note tagged "union" between @c std::coroutine_handle<>::address() , @c active_root* and @c nested_info*
-			//! @attention LSB set => nested_info *
-			//! @attention only @c active_root* for "root"-task
+			//! @attention tagged "union"
+			//! LSB set => nested_info *
+			//! if promise is at bottom of coroutine-"stack" => @c active_root*
+			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
 			std::uintptr_t data;
 
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
@@ -89,7 +88,7 @@ namespace lazy {
 			}
 
 			template<typename Other, bool Initial>
-			struct iterator_awaiter final { //TODO: add contracts
+			struct iterator_awaiter final { //TODO: add contracts and constraints / static_asserts
 				Other other;
 				nested_info n;
 				std::coroutine_handle<> prev_top;
@@ -146,7 +145,7 @@ namespace lazy {
 			static
 			auto await_transform(iterator_awaiter<T, U> other) { return other; }
 		private:
-			struct pop_awaiter final {
+			struct pop_awaiter final { //TODO: add contracts and constraints / static_asserts
 				static
 				auto await_ready() noexcept { return false; }
 
@@ -166,7 +165,7 @@ namespace lazy {
 			};
 		protected:
 			template<typename Other>
-			struct push_awaiter {
+			struct push_awaiter { //TODO: add contracts and constraints / static_asserts
 				Other other;
 				nested_info n;
 
@@ -280,7 +279,7 @@ namespace lazy {
 	};
 
 
-	namespace ranges {
+	namespace ranges { //TODO: remove?
 		template</*TODO std::ranges::range*/ typename Range>
 		struct elements_of {
 			Range range;
@@ -360,7 +359,7 @@ namespace lazy {
 
 			void return_void() const noexcept {}
 		private:
-			struct yield_awaiter {
+			struct yield_awaiter { //TODO: add contracts and constraints / static_asserts
 				static
 				auto await_ready() noexcept { return false; }
 				//! @note does not check for suspension, as we need to jump back to @c yield_target
