@@ -70,7 +70,7 @@ auto flipflop() -> lazy::generator<int> {
 }
 
 auto iota() -> lazy::generator<int> {
-	co_yield lazy::ranges::elements_of(flipflop());
+	co_await flipflop();
 	printf("iota\n");
 	for(int i = 0; i < 10; ++i) {
 		co_yield i;
@@ -78,7 +78,7 @@ auto iota() -> lazy::generator<int> {
 }
 
 auto fibonacci() -> lazy::generator<int> {
-	co_yield lazy::ranges::elements_of{iota()};
+	co_await iota();
 	printf("fibonacci\n");
 	auto a = 0, b = 1;
 	for (;;) {

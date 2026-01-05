@@ -214,7 +214,7 @@ namespace lazy {
 	//! @tparam Result return type of the task
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited task is completed, optionally receiving a value
+	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
@@ -279,26 +279,16 @@ namespace lazy {
 	};
 
 
-	namespace ranges { //TODO: remove?
-		template</*TODO std::ranges::range*/ typename Range>
-		struct elements_of {
-			Range range;
-		};
-
-		template<typename Range>
-		elements_of(Range &&) -> elements_of<Range &&>;
-	}
-
 	//! @brief lazy view of elements yielded by a coroutine
 	//! @tparam Reference reference type of generator
 	//! @tparam Value value type of the generator
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
-	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited task is completed, optionally receiving a value
+	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited @c task is completed, optionally receiving a value
+	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generatro until awaited generator yields next value
-	//TODO: support for `co_yield ranges::elements_of{g};`
-	template<typename Reference, typename Value = void>
+	template<typename Reference, typename Value = void> //TODO: remove Value?
 	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
 		static_assert(not std::is_same_v<std::decay_t<Reference>, internal::progress_t>);
 		static_assert(not std::is_same_v<std::decay_t<Value>, internal::progress_t>);
@@ -343,18 +333,13 @@ namespace lazy {
 				return awaiter{{}, lval};
 			}
 
+			using internal::promise_base::await_transform;
+
 			template<typename R, typename V>
 			requires std::same_as<typename generator<R, V>::yielded, yielded>
-			auto yield_value(ranges::elements_of<generator<R, V> &&> g) noexcept { //TODO: remove need for ranges::elements_of?? (generator<any> => need tag, but need better name)
-				g.range.handle.promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter<generator<R, V>>{std::move(g.range)};
-			}
-
-			template<std::ranges::input_range R>
-			requires std::convertible_to<std::ranges::range_reference_t<R>, yielded> //TODO: remove?? (or use std::ranges::elements_of) ??
-			auto yield_value(ranges::elements_of<R> r) noexcept {
-				auto wrapped{[](std::ranges::iterator_t<R> i, std::ranges::sentinel_t<R> s) -> generator<yielded, std::ranges::range_value_t<R>> { for (; i != s; ++i) co_yield static_cast<yielded>(*i); }};
-				return yield_value(ranges::elements_of(wrapped(std::ranges::begin(r.range), std::ranges::end(r.range))));
+			auto await_transform(generator<R, V> other) /*TODO: [C++26] pre(not other.valueless())*/ { //TODO: is this really better than using co_yield?
+				other.handle.promise().yield_target = yield_target;
+				return internal::promise_base::push_awaiter{std::move(other)};
 			}
 
 			void return_void() const noexcept {}
