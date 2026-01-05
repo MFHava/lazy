@@ -29,25 +29,28 @@ namespace lazy {
 		struct active_root final {
 			std::coroutine_handle<> top;
 
+			//! @note inlined @c function_ref
 			const void * ctx;
 			bool (*fptr)(const void *) noexcept;
+
+			auto suspend() const noexcept -> bool { return fptr(ctx); }
 		};
 
-		struct promise_base {
+		class promise_base {
 			struct nested_info final {
 				std::exception_ptr eptr;        //needed for manual stack unwinding
 				std::coroutine_handle<> parent; //directly preceding coroutine
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
 
+			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
+			void set_nested(nested_info & nested) /*TODO: [C++26] post(not (data & 1U))*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
+		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
 			//! if promise is at bottom of coroutine-"stack" => @c active_root*
 			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
 			std::uintptr_t data;
-
-			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-			void set_nested(nested_info & nested) /*TODO: [C++26] post(not (data & 1U))*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
 
 			static
 			auto initial_suspend() noexcept -> std::suspend_always { return {}; }
@@ -72,7 +75,7 @@ namespace lazy {
 
 				auto nested{get_nested()};
 				auto ar{reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
-				return awaiter{ar->fptr(ar->ctx)};
+				return awaiter{ar->suspend()};
 			}
 
 			template<typename T>
@@ -117,7 +120,7 @@ namespace lazy {
 					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
 					other_promise.set_nested(n);
 
-					return ar->fptr(ar->ctx) ? std::noop_coroutine() : ar->top;
+					return ar->suspend() ? std::noop_coroutine() : ar->top;
 				}
 
 				auto await_resume() {
@@ -155,7 +158,7 @@ namespace lazy {
 					if(const auto nested{self.promise().get_nested()}) {
 						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
 						ar->top = nested->parent;
-						if(not ar->fptr(ar->ctx)) return ar->top;
+						if(not ar->suspend()) return ar->top;
 					}
 					return std::noop_coroutine();
 				}
@@ -179,8 +182,7 @@ namespace lazy {
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 					ar->top = get_handle(other);
-					return ar->fptr(ar->ctx) ? std::noop_coroutine()
-							: ar->top;
+					return ar->suspend() ? std::noop_coroutine() : ar->top;
 				}
 
 				auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
