@@ -100,21 +100,19 @@ namespace lazy {
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					auto other_handle{get_handle(other)};
-					auto & other_promise{other_handle.promise()};
-					const auto & nested{self.promise().get_nested()};
+					auto & other_promise{get_handle(other).promise()};
 
 					//! @attention connect @c other 's @c co_yield with current coroutine frame
-					//! @note @c yield_target will never be reset, a once-started @c generator cannot be transfered to a different coroutine
 					if constexpr(Initial) other_promise.yield_target = self;
 					//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
 
-					//! @attention store enough context (@c top and @c self ) to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
+					//! @attention store enough context to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
 					prev_top = self;
 
 					//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
 					n.parent = self;
 
+					const auto & nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
