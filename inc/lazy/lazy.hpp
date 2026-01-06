@@ -73,6 +73,7 @@ namespace lazy {
 					void await_resume() noexcept {}
 				};
 
+				//! @note determine suspension here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
 				auto nested{get_nested()};
 				auto ar{reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
 				return awaiter{ar->suspend()};
@@ -91,10 +92,15 @@ namespace lazy {
 			}
 
 			template<typename Other, bool Initial>
-			struct iterator_awaiter final { //TODO: add contracts and constraints / static_asserts
+			class iterator_awaiter final { //TODO: add contracts and constraints / static_asserts
+				static_assert((Initial and not std::is_reference_v<Other>) or (not Initial and std::is_lvalue_reference_v<Other>));
+
 				Other other;
 				nested_info n;
 				std::coroutine_handle<> prev_top;
+			public:
+				iterator_awaiter(Other other) requires(not Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{other} {}
+				iterator_awaiter(Other other) requires(Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
 
 				auto await_ready() const noexcept { return get_handle(other).done(); }
 
@@ -160,9 +166,12 @@ namespace lazy {
 			};
 		protected:
 			template<typename Other>
-			struct push_awaiter { //TODO: add contracts and constraints / static_asserts
-				Other other;
+			class push_awaiter { //TODO: add contracts and constraints / static_asserts
 				nested_info n;
+			protected:
+				Other other;
+			public:
+				push_awaiter(Other other) : other{std::move(other)} {}
 
 				auto await_ready() const noexcept { return get_handle(other).done(); }
 
