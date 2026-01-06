@@ -101,19 +101,19 @@ namespace lazy {
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 					auto & other_promise{get_handle(other).promise()};
+					//TODO: [C++26] contract_assert(not (other_promise.data & 1U));
 
 					//! @attention connect @c other 's @c co_yield with current coroutine frame
 					if constexpr(Initial) other_promise.yield_target = self;
 					//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
 
 					//! @attention store enough context to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
-					prev_top = self;
+					prev_top = n.parent = self;
 
-					//! @attention push @c other (which contrary to normal push could already be nested ...) onto stack
-					n.parent = self;
-
+					//! @attention push @c other onto stack
 					const auto & nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
+
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
 					other_promise.set_nested(n);
@@ -125,16 +125,10 @@ namespace lazy {
 					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
 					if(n.eptr) std::rethrow_exception(n.eptr);
 
-					auto other_handle{get_handle(other)};
-					auto & other_promise{other_handle.promise()};
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 
 					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-					other_promise.data = reinterpret_cast<std::uintptr_t>(ar->top.address());
-
-					//! @attention due to type-erasure we can't get the correct @c ptr from @c top => copy said pointer to the "root" (only valid if resumption was due to yield)
-					if(not other_handle.done()) other_promise.ptr = other_handle.from_address(reinterpret_cast<void *>(other_promise.data)).promise().ptr;
-
+					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(ar->top.address());
 					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
 					ar->top = prev_top;
 
@@ -368,7 +362,12 @@ namespace lazy {
 			}
 			~iterator() noexcept { if(handle) handle.destroy(); }
 
-			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ { return static_cast<reference>(*handle.promise().ptr); }
+			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ {
+				auto & promise{handle.promise()};
+				//TODO: [C++26] contract_assert(not (promise.data & 1U));
+				auto top{std::coroutine_handle<promise_type>::from_address(reinterpret_cast<void *>(promise.data))};
+				return static_cast<reference>(*top.promise().ptr);
+			}
 
 			//! @returns awaiter for lazy increment
 			//! @attention the returned awaiter must be awaited on on the coroutine that initially awaited @c generator::begin
