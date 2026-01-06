@@ -44,7 +44,7 @@ namespace lazy {
 			};
 
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-			void set_nested(nested_info & nested) /*TODO: [C++26] post(not (data & 1U))*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
+			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
 		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
@@ -83,7 +83,7 @@ namespace lazy {
 			static
 			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter : push_awaiter<task<T>> {
-					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.handle.done())*/ {
+					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(get_handle(other).done())*/ {
 						push_awaiter<task<T>>::await_resume();
 						if constexpr(not std::is_void_v<T>) return std::move(*internal::get_handle(this->other).promise().result);
 					}
@@ -92,7 +92,7 @@ namespace lazy {
 			}
 
 			template<typename Other, bool Initial>
-			class iterator_awaiter final { //TODO: add contracts and constraints / static_asserts
+			class iterator_awaiter final {
 				static_assert((Initial and not std::is_reference_v<Other>) or (not Initial and std::is_lvalue_reference_v<Other>));
 
 				Other other;
@@ -102,7 +102,7 @@ namespace lazy {
 				iterator_awaiter(Other other) requires(not Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{other} {}
 				iterator_awaiter(Other other) requires(Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
 
-				auto await_ready() const noexcept { return get_handle(other).done(); }
+				auto await_ready() const noexcept { return false; }
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
@@ -146,7 +146,7 @@ namespace lazy {
 			static
 			auto await_transform(iterator_awaiter<T, U> other) { return other; }
 		private:
-			struct pop_awaiter final { //TODO: add contracts and constraints / static_asserts
+			struct pop_awaiter final {
 				static
 				auto await_ready() noexcept { return false; }
 
@@ -166,12 +166,12 @@ namespace lazy {
 			};
 		protected:
 			template<typename Other>
-			class push_awaiter { //TODO: add contracts and constraints / static_asserts
+			class push_awaiter {
 				nested_info n;
 			protected:
 				Other other;
 			public:
-				push_awaiter(Other other) : other{std::move(other)} {}
+				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other))*/ : other{std::move(other)} {}
 
 				auto await_ready() const noexcept { return get_handle(other).done(); }
 
@@ -186,7 +186,7 @@ namespace lazy {
 					return ar->suspend() ? std::noop_coroutine() : ar->top;
 				}
 
-				auto await_resume() const /*TODO: [C++26] pre(other.handle.done())*/ {
+				auto await_resume() const /*TODO: [C++26] pre(get_handle(other).done())*/ {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 				}
 			};
@@ -319,12 +319,12 @@ namespace lazy {
 
 			using internal::promise_base::yield_value;
 
-			auto yield_value(yielded val) noexcept {
+			auto yield_value(yielded val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				ptr = std::addressof(val);
 				return yield_awaiter{};
 			}
 
-			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> and std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> {
+			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> and std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				struct awaiter final : yield_awaiter {
 					std::remove_cvref_t<yielded> val;
 
@@ -340,14 +340,15 @@ namespace lazy {
 
 			template<typename R, typename V>
 			requires std::same_as<typename generator<R, V>::yielded, yielded>
-			auto await_transform(generator<R, V> other) /*TODO: [C++26] pre(not other.valueless())*/ { //TODO: is this really better than using co_yield?
+			auto await_transform(generator<R, V> other) /*TODO: [C++26] pre(not other.valueless()) pre(yield_target and not yield_target.done())*/ { //TODO: is this really better than using co_yield?
 				other.handle.promise().yield_target = yield_target;
 				return internal::promise_base::push_awaiter{std::move(other)};
 			}
 
-			void return_void() const noexcept {}
+			static
+			void return_void() noexcept {}
 		private:
-			struct yield_awaiter { //TODO: add contracts and constraints / static_asserts
+			struct yield_awaiter {
 				static
 				auto await_ready() noexcept { return false; }
 				//! @note does not check for suspension, as we need to jump back to @c yield_target
@@ -383,7 +384,7 @@ namespace lazy {
 			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
 
 			friend
-			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); } //TODO: alternative to precondition: not self.handle == sentinel
+			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); }
 		private:
 			friend
 			generator;
