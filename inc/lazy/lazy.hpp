@@ -20,10 +20,10 @@ namespace lazy {
 		//! @brief internal accessor to handle
 		auto get_handle(auto & val) noexcept { return val.handle; }
 
-		struct progress_t final {
+		struct resumption_t final {
 			constexpr
 			explicit
-			progress_t(int) noexcept {}
+			resumption_t(int) noexcept {}
 		};
 
 		struct active_root final {
@@ -62,7 +62,7 @@ namespace lazy {
 				else throw;
 			}
 
-			auto yield_value(internal::progress_t) const noexcept {
+			auto await_transform(internal::resumption_t) const noexcept {
 				struct awaiter final {
 					const bool suspend;
 
@@ -211,18 +211,18 @@ namespace lazy {
 	//! @brief tag to yield progress within a @c task or @c generator
 	inline
 	constexpr
-	internal::progress_t progress{1};
+	internal::resumption_t resumption{1};
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
 	//! supported coroutine statements:
-	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
+	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
 	struct task final {
-		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result> and not std::is_same_v<std::decay_t<Result>, internal::progress_t>));
+		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
@@ -286,16 +286,13 @@ namespace lazy {
 	//! @tparam Reference reference type of generator
 	//! @tparam Value value type of the generator
 	//! supported coroutine statements:
-	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
+	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited @c task is completed, optionally receiving a value
-	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generatro until awaited generator yields next value
+	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
+	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	template<typename Reference, typename Value = void> //TODO: remove Value?
 	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
-		static_assert(not std::is_same_v<std::decay_t<Reference>, internal::progress_t>);
-		static_assert(not std::is_same_v<std::decay_t<Value>, internal::progress_t>);
-
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
 
@@ -316,8 +313,6 @@ namespace lazy {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
-
-			using internal::promise_base::yield_value;
 
 			auto yield_value(yielded val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				ptr = std::addressof(val);
