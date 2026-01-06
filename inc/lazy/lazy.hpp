@@ -338,9 +338,7 @@ namespace lazy {
 
 			using internal::promise_base::await_transform;
 
-			template<typename R, typename V>
-			requires std::same_as<typename generator<R, V>::yielded, yielded>
-			auto await_transform(generator<R, V> other) /*TODO: [C++26] pre(not other.valueless()) pre(yield_target and not yield_target.done())*/ { //TODO: is this really better than using co_yield?
+			auto await_transform(generator other) /*TODO: [C++26] pre(not other.valueless()) pre(yield_target and not yield_target.done())*/ {
 				other.handle.promise().yield_target = yield_target;
 				return internal::promise_base::push_awaiter{std::move(other)};
 			}
