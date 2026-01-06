@@ -6,7 +6,6 @@
 
 #pragma once
 #include <chrono>
-#include <ranges>
 #include <utility>
 #include <optional>
 #include <coroutine>
@@ -282,7 +281,7 @@ namespace lazy {
 	};
 
 
-	//! @brief lazy view of elements yielded by a coroutine
+	//! @brief cooperative synchronous(!) recursive coroutine generator
 	//! @tparam Reference reference type of generator
 	//! @tparam Value value type of the generator
 	//! supported coroutine statements:
@@ -292,7 +291,7 @@ namespace lazy {
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	template<typename Reference, typename Value = void> //TODO: remove Value?
-	class generator final : public std::ranges::view_interface<generator<Reference, Value>> {
+	class generator final {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
 
