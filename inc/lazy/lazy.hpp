@@ -287,10 +287,10 @@ namespace lazy {
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited @c task is completed, optionally receiving a value
-	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generatro until awaited generator yields next value
+	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generator until awaited generator yields next value
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
-	template<typename Reference, typename Value = void> //TODO: remove Value?
+	template<typename Reference, typename Value = void>
 	class generator final {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
@@ -332,7 +332,7 @@ namespace lazy {
 
 			using internal::promise_base::await_transform;
 
-			auto await_transform(generator other) /*TODO: [C++26] pre(not other.valueless()) pre(yield_target and not yield_target.done())*/ {
+			auto await_transform(generator other) /*TODO: [C++26] pre(not other.valueless() and not other.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
 				other.handle.promise().yield_target = yield_target;
 				return internal::promise_base::push_awaiter{std::move(other)};
 			}
