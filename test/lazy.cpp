@@ -104,6 +104,8 @@ TEST_CASE("generator fib", "[generator]") {
 			for(auto b = co_await g.begin(); b != g.end(); co_await ++b) std::printf("%c", *b);
 			std::printf("\n");
 		}
+
+		std::printf("%s\n", (co_await []() -> lazy::task<std::string> { co_return "=========== DONE ==========="; }()).c_str());
 	}();
 
 

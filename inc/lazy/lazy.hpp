@@ -7,7 +7,6 @@
 #pragma once
 #include <chrono>
 #include <utility>
-#include <optional>
 #include <coroutine>
 #include <type_traits>
 
@@ -84,7 +83,7 @@ namespace lazy {
 				struct awaiter : push_awaiter<task<T>> {
 					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(get_handle(other).done())*/ {
 						push_awaiter<task<T>>::await_resume();
-						if constexpr(not std::is_void_v<T>) return std::move(*internal::get_handle(this->other).promise().result);
+						if constexpr(not std::is_void_v<T>) return std::move(internal::get_handle(this->other).promise().get_value());
 					}
 				};
 				return awaiter{std::move(other)};
@@ -192,12 +191,22 @@ namespace lazy {
 		};
 
 		template<typename T>
-		struct task_promise : promise_base {
-			//! @note result of computation, only set once task is done
-			std::optional<T> result;
+		class task_promise : public promise_base {
+			union { T result; };
+			bool initialized{false};
+		public:
+			task_promise() noexcept {}
+			task_promise(const task_promise &) =delete;
+			auto operator=(const task_promise &) -> task_promise & =delete;
+			~task_promise() noexcept { if(initialized) result.~T(); }
 
 			template<typename U = T>
-			void return_value(U && value) { result.emplace(std::forward<U>(value)); }
+			void return_value(U && value) /*TODO: [C++26] pre(not initialized)*/ {
+				new(&result) T(std::forward<U>(value));
+				initialized = true;
+			}
+
+			auto get_value() -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
 		};
 
 		template<>
@@ -248,7 +257,7 @@ namespace lazy {
 
 		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
 			wait();
-			if constexpr(not std::is_void_v<Result>) return *handle.promise().result;
+			if constexpr(not std::is_void_v<Result>) return handle.promise().get_value();
 		}
 
 		task(task && other) noexcept : handle{std::exchange(other.handle, {})} {}
