@@ -83,7 +83,7 @@ namespace lazy {
 				struct awaiter : push_awaiter<task<T>> {
 					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(get_handle(other).done())*/ {
 						push_awaiter<task<T>>::await_resume();
-						if constexpr(not std::is_void_v<T>) return std::move(internal::get_handle(this->other).promise().get_value());
+						return std::move(internal::get_handle(this->other).promise()).get_value();
 					}
 				};
 				return awaiter{std::move(other)};
@@ -206,13 +206,17 @@ namespace lazy {
 				initialized = true;
 			}
 
-			auto get_value() -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
+			auto get_value() & -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
+			auto get_value() && -> T && /*TODO: [C++26] pre(initialized)*/ { return std::move(result); }
 		};
 
 		template<>
 		struct task_promise<void> : promise_base {
 			static
 			void return_void() noexcept {}
+
+			static
+			void get_value() noexcept {}
 		};
 	}
 
@@ -257,7 +261,7 @@ namespace lazy {
 
 		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
 			wait();
-			if constexpr(not std::is_void_v<Result>) return handle.promise().get_value();
+			return handle.promise().get_value();
 		}
 
 		task(task && other) noexcept : handle{std::exchange(other.handle, {})} {}
