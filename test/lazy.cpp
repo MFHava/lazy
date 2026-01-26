@@ -46,6 +46,47 @@ TEST_CASE("nesting", "[lazy]") {
 	REQUIRE(t.get() == 5.0);
 }
 
+TEST_CASE("nesting_started_before", "[lazy]") {
+	using namespace std::chrono_literals;
+
+	auto outer{[]() -> lazy::task<int> {
+		auto middle{[]() -> lazy::task<int> {
+			auto inner{[]() -> lazy::task<int> {
+				auto gen{[]() -> lazy::generator<int> {
+					co_yield co_await []() -> lazy::task<int> { co_return 0; }();
+					co_await lazy::resumption;
+					co_yield -1;
+					co_await lazy::resumption;
+					co_yield 0;
+					co_await lazy::resumption;
+					co_yield 1;
+					co_await lazy::resumption;
+					co_yield 0;
+					co_await lazy::resumption;
+					co_yield 1;
+					co_await lazy::resumption;
+				}()};
+
+				int sum{0};
+				for(auto it{co_await gen.begin()}; it != gen.end(); co_await ++it) {
+					printf("%d\n", *it);
+					co_await lazy::resumption;
+					sum += *it;
+				}
+				co_await lazy::resumption;
+				co_return sum;
+			}()};
+
+			inner.wait_for(0ms);
+			co_return co_await std::move(inner) * 2;
+		}()};
+		middle.wait_for(0ms);
+		co_return co_await std::move(middle) * 5;
+	}()};
+
+	REQUIRE(outer.get() == 10);
+}
+
 //TODO: timed waiting, etc.
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 
