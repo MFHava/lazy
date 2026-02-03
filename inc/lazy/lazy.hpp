@@ -6,6 +6,9 @@
 
 #pragma once
 #include <chrono>
+#include <memory>
+#include <cstdint>
+#include <cstring>
 #include <utility>
 #include <coroutine>
 #include <type_traits>
@@ -150,6 +153,71 @@ namespace lazy {
 			template<typename T, bool U>
 			static
 			auto await_transform(iterator_awaiter<T, U> other) { return other; }
+		private:
+			//memory layout:
+			//     [ coroutine frame ] [ deleter ]   [ offset ] [ padding  ] [ allocator ]
+			//     [       ? B       ] [   8 B   ]   [   1 B  ] [ offset B ] [    ? B    ]
+			//     [--      always present     --]   [--   only for statefull alloc    --]
+
+			using deleter_t = void(*)(void *, std::size_t) noexcept;
+			static_assert(sizeof(deleter_t) == sizeof(std::uintptr_t));
+
+			template<typename Alloc>
+			static
+			auto allocate(const Alloc & alloc, std::size_t size) -> void * {
+				using A = std::allocator_traits<Alloc>::template rebind_alloc<std::byte>;
+
+				constexpr auto stateless_allocator{std::is_default_constructible_v<A> and std::allocator_traits<A>::is_always_equal::value};
+
+				const auto offset{stateless_allocator ? 0 : ((alignof(A) - (size + sizeof(deleter_t) + 1) % alignof(A)) % alignof(A))};
+				//TODO: [C++26] contract_assert(offset <= 255);
+				const auto capacity{size + sizeof(deleter_t) + (stateless_allocator ? 0 : 1 + offset + sizeof(A))};
+
+				auto dealloc{+[](std::byte * ptr, std::size_t size) noexcept {
+					if constexpr(stateless_allocator) A{}.deallocate(ptr, size + sizeof(deleter_t));
+					else {
+						const auto offset{static_cast<std::size_t>(*(ptr + size + sizeof(deleter_t)))};
+						auto pa{reinterpret_cast<A *>(ptr + size + sizeof(deleter_t) + 1 + offset)};
+						A alloc{std::move(*pa)};
+						pa->~A();
+						alloc.deallocate(ptr, size + sizeof(deleter_t) + 1 + offset + sizeof(A));
+					}
+				}};
+
+				//! @note allocators may not throw on construction, destruction, nor rebind but may not be marked as @c noexcept
+				A a{alloc};
+				auto ptr{a.allocate(capacity)};
+				auto d{reinterpret_cast<std::uintptr_t>(dealloc)};
+				std::memcpy(ptr + size, &d, sizeof(d));
+				if constexpr(not stateless_allocator) {
+					*(ptr + size + sizeof(deleter_t)) = static_cast<std::byte>(offset);
+					new(ptr + size + sizeof(deleter_t) + 1 + offset) A{std::move(a)};
+				}
+				return ptr;
+			}
+		public:
+			//! @note no allocator
+			static
+			auto operator new(std::size_t size) -> void * { return allocate(std::allocator<char>{}, size); }
+
+			//! @note allocator, non-member function
+			template<typename Alloc, typename... Args>
+			static
+			auto operator new(std::size_t size, std::allocator_arg_t, const Alloc & alloc, const Args &...) -> void * { return allocate(alloc, size); }
+
+			//! @note allocator, member function
+			template<typename This, typename Alloc, typename... Args>
+			static
+			auto operator new(std::size_t size, const This &, std::allocator_arg_t, const Alloc & alloc, const Args &...) -> void * { return allocate(alloc, size); }
+
+			//! @note must handle all versions of @code{.cpp} operator new() @encode
+			static
+			void operator delete(void * ptr, std::size_t size) {
+				std::uintptr_t d;
+				std::memcpy(&d, static_cast<char *>(ptr) + size, sizeof(std::uintptr_t));
+				//TODO: [C++26] contract_assert(d);
+				reinterpret_cast<deleter_t>(d)(static_cast<std::byte *>(ptr), size);
+			}
 		private:
 			struct pop_awaiter final {
 				static

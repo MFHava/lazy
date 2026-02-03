@@ -4,6 +4,9 @@
 //    (See accompanying file ../LICENSE_1_0.txt or copy at
 //          http://www.boost.org/LICENSE_1_0.txt)
 
+#include <array>
+#include <memory_resource>
+
 #include <catch2/catch_test_macros.hpp>
 #include <lazy/lazy.hpp>
 
@@ -28,6 +31,56 @@ TEST_CASE("throwing_makes_valueless", "[lazy]") {
 	try { t.wait(); }
 	catch(...) {}
 	REQUIRE(t.valueless());
+}
+
+	template<typename T>
+	struct myallocator final {
+		int val;
+	
+		using value_type = T;
+		using size_type = std::size_t;
+		using difference_type = std::ptrdiff_t;
+
+
+		template<typename U>
+		myallocator(myallocator<U> other) : val{other.val} { printf("myallocator::rebind\n"); }
+
+		myallocator(int val) noexcept : val{val} { printf("myallocator(int)\n"); }
+
+		myallocator(const myallocator & other) : val{other.val} { printf("myallocator(const myallocator &)\n"); }
+		myallocator(myallocator && other) noexcept : val{std::exchange(other.val, -2)} { printf("myallocator(const myallocator &)\n"); }
+		auto operator=(const myallocator & other) noexcept -> myallocator & { printf("myallocator::operator=(const myallocator &)\n"); val = other.val; return *this; }
+		auto operator=(myallocator && other) -> myallocator & { printf("myallocator::operator=(myallocator &&)\n"); val = std::exchange(other.val, -1); return *this; }
+		~myallocator() noexcept { printf("~myallocator()\n"); }
+
+		auto allocate(std::size_t size) -> T * {
+			printf("myallocator::allocate: %d\n", val);
+			return (T*)std::malloc(size);
+		}
+		void deallocate(T * ptr, std::size_t) {
+			printf("myallocator::deallocate: %d\n", val);
+			std::free(ptr);
+		}
+	};
+
+
+
+TEST_CASE("stateless_allocator support", "[lazy]") {
+	myallocator<bool> a{10};
+
+	std::array<std::byte, 1024> buffer{}; // enough to fit in all nodes
+	std::pmr::monotonic_buffer_resource mbr{buffer.data(), buffer.size()};
+	std::pmr::polymorphic_allocator<int> pa{&mbr};
+
+
+	std::allocator<double> d;
+
+
+	auto t{[](/*std::allocator_arg_t, auto*/) -> lazy::task<int> {
+		co_return 1;
+	}(/*std::allocator_arg, pa*/)};
+
+	REQUIRE(t.get() == 1);
 }
 
 TEST_CASE("nesting", "[lazy]") {
