@@ -27,6 +27,12 @@ namespace lazy {
 			resumption_t(int) noexcept {}
 		};
 
+		struct progress_t final {
+			constexpr
+			explicit
+			progress_t(int) noexcept {}
+		};
+
 		struct active_root final {
 			std::coroutine_handle<> top;
 
@@ -302,9 +308,18 @@ namespace lazy {
 	constexpr
 	internal::resumption_t resumption{1};
 
+
+	//! @brief tag to yield progress within a @c task
+	//! @note not supported in @c generator to avoid ambiguity problems
+	inline
+	constexpr
+	internal::progress_t progress{1};
+
+
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
 	//! supported coroutine statements:
+	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
@@ -317,6 +332,8 @@ namespace lazy {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
+
+			auto yield_value(internal::progress_t) const noexcept { return this->await_transform(resumption); }
 		};
 
 		auto valueless() const noexcept -> bool { return not handle; }

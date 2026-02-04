@@ -123,10 +123,10 @@ TEST_CASE("nesting_started_before", "[lazy]") {
 				int sum{0};
 				for(auto it{co_await gen.begin()}; it != gen.end(); co_await ++it) {
 					printf("%d\n", *it);
-					co_await lazy::resumption;
+					co_yield lazy::progress;
 					sum += *it;
 				}
-				co_await lazy::resumption;
+				co_yield lazy::progress;
 				co_return sum;
 			}()};
 
