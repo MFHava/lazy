@@ -37,8 +37,8 @@ namespace lazy {
 			std::coroutine_handle<> top;
 
 			//! @note inlined @c function_ref
-			const void * ctx;
-			bool (*fptr)(const void *) noexcept;
+			void * ctx;
+			bool (*fptr)(void *) noexcept;
 
 			auto suspend() const noexcept -> bool { return fptr(ctx); }
 		};
@@ -340,7 +340,7 @@ namespace lazy {
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { if(not done()) resume({.fptr = [](const void *) noexcept { return false; }}); }
+		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { wait_with([]() noexcept { return false; }); }
 
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
@@ -350,9 +350,29 @@ namespace lazy {
 #if __cpp_lib_chrono >= 201907L
 			static_assert(std::chrono::is_clock_v<Clock>);
 #endif
+			return wait_with([&]() noexcept { return Clock::now() >= time; });
+		}
+
+		template<typename Func>
+		auto wait_with(Func func) -> bool /*TODO: [C++26] pre(not valueless())*/ {
+			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return true;
-			resume({.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<std::remove_reference_t<decltype(time)> *>(ptr); }});
-			return done();
+			try {
+				auto & promise{handle.promise()};
+				internal::active_root ar{
+					.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
+					.ctx = std::addressof(func),
+					.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); }
+				};
+				//TODO: [C++26] contract_assert(ar.top and not ar.top.done());
+				promise.data = reinterpret_cast<std::uintptr_t>(std::addressof(ar));
+				ar.top.resume();
+				promise.data = reinterpret_cast<std::uintptr_t>(ar.top.address());
+				return done();
+			} catch(...) {
+				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
+				throw;
+			}
 		}
 
 		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(done())*/ {
@@ -371,20 +391,6 @@ namespace lazy {
 		auto internal::get_handle(auto &) noexcept;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-
-		void resume(internal::active_root ar) {
-			try {
-				auto & promise{handle.promise()};
-				ar.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data));
-				//TODO: [C++26] contract_assert(ar.top and not ar.top.done());
-				promise.data = reinterpret_cast<std::uintptr_t>(std::addressof(ar));
-				ar.top.resume();
-				promise.data = reinterpret_cast<std::uintptr_t>(ar.top.address());
-			} catch(...) {
-				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
-				throw;
-			}
-		}
 
 		std::coroutine_handle<promise_type> handle;
 	};
