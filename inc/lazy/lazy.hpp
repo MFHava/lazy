@@ -98,7 +98,7 @@ namespace lazy {
 			static
 			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter : push_awaiter<task<T>> {
-					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(get_handle(other).done())*/ {
+					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.done())*/ {
 						push_awaiter<task<T>>::await_resume();
 						return std::move(internal::get_handle(this->other).promise()).get_value();
 					}
@@ -338,7 +338,9 @@ namespace lazy {
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ { if(not handle.done()) resume({.fptr = [](const void *) noexcept { return false; }}); }
+		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
+
+		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { if(not done()) resume({.fptr = [](const void *) noexcept { return false; }}); }
 
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
@@ -348,12 +350,12 @@ namespace lazy {
 #if __cpp_lib_chrono >= 201907L
 			static_assert(std::chrono::is_clock_v<Clock>);
 #endif
-			if(handle.done()) return true;
+			if(done()) return true;
 			resume({.ctx = std::addressof(time), .fptr = +[](const void * ptr) noexcept { return Clock::now() >= *reinterpret_cast<std::remove_reference_t<decltype(time)> *>(ptr); }});
-			return handle.done();
+			return done();
 		}
 
-		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(handle.done())*/ {
+		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(done())*/ {
 			wait();
 			return handle.promise().get_value();
 		}
