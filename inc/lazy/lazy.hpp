@@ -170,7 +170,7 @@ namespace lazy {
 
 			template<typename Alloc>
 			static
-			auto allocate(const Alloc & alloc, std::size_t size) -> void * {
+			auto allocate(std::size_t size, const Alloc & alloc, const auto &...) -> void * {
 				using A = std::allocator_traits<Alloc>::template rebind_alloc<std::byte>;
 
 				constexpr auto stateless_allocator{std::is_default_constructible_v<A> and std::allocator_traits<A>::is_always_equal::value};
@@ -204,21 +204,25 @@ namespace lazy {
 		public:
 			//! @note no allocator
 			static
-			auto operator new(std::size_t size) -> void * { return allocate(std::allocator<char>{}, size); }
+			auto operator new(std::size_t size) -> void * { return allocate(size, std::allocator<char>{}); }
 
 			//! @note allocator, non-member function
-			template<typename Alloc, typename... Args>
 			static
-			auto operator new(std::size_t size, std::allocator_arg_t, const Alloc & alloc, const Args &...) -> void * { return allocate(alloc, size); }
+			auto operator new(std::size_t size, std::allocator_arg_t, const auto &... args) -> void * {
+				static_assert(sizeof...(args), "if allocator_arg_t is first argument, the second argument must be an allocator");
+				return allocate(size, args...);
+			}
 
 			//! @note allocator, member function
-			template<typename This, typename Alloc, typename... Args>
 			static
-			auto operator new(std::size_t size, const This &, std::allocator_arg_t, const Alloc & alloc, const Args &...) -> void * { return allocate(alloc, size); }
+			auto operator new(std::size_t size, const auto &, std::allocator_arg_t, const auto &... args) -> void * {
+				static_assert(sizeof...(args), "if allocator_arg_t is first argument, the second argument must be an allocator");
+				return allocate(size, args...);
+			}
 
 			//! @note must handle all versions of @code{.cpp} operator new() @encode
 			static
-			void operator delete(void * ptr, std::size_t size) {
+			void operator delete(void * ptr, std::size_t size) noexcept {
 				std::uintptr_t d;
 				std::memcpy(&d, static_cast<char *>(ptr) + size, sizeof(std::uintptr_t));
 				//TODO: [C++26] contract_assert(d);

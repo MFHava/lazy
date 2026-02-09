@@ -65,7 +65,7 @@ TEST_CASE("throwing_makes_valueless", "[lazy]") {
 
 
 
-TEST_CASE("stateless_allocator support", "[lazy]") {
+TEST_CASE("stateless_allocator", "[lazy]") {
 	myallocator<bool> a{10};
 
 	std::array<std::byte, 1024> buffer{}; // enough to fit in all nodes
@@ -76,9 +76,9 @@ TEST_CASE("stateless_allocator support", "[lazy]") {
 	std::allocator<double> d;
 
 
-	auto t{[](/*std::allocator_arg_t, auto*/) -> lazy::task<int> {
+	auto t{[](std::allocator_arg_t, auto...) -> lazy::task<int> {
 		co_return 1;
-	}(/*std::allocator_arg, pa*/)};
+	}(std::allocator_arg, pa)};
 
 	REQUIRE(t.get() == 1);
 }
