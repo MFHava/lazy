@@ -170,7 +170,8 @@ namespace lazy {
 
 			template<typename Alloc>
 			static
-			auto allocate(std::size_t size, const Alloc & alloc, const auto &...) -> void * {
+			auto allocate(std::size_t size, const Alloc * alloc, ...) -> void * {
+				//TODO: [C++26] contract_assert(alloc);
 				using A = std::allocator_traits<Alloc>::template rebind_alloc<std::byte>;
 
 				constexpr auto stateless_allocator{std::is_default_constructible_v<A> and std::allocator_traits<A>::is_always_equal::value};
@@ -191,7 +192,7 @@ namespace lazy {
 				}};
 
 				//! @note allocators may not throw on construction, destruction, nor rebind but may not be marked as @c noexcept
-				A a{alloc};
+				A a{*alloc};
 				auto ptr{a.allocate(capacity)};
 				auto d{reinterpret_cast<std::uintptr_t>(dealloc)};
 				std::memcpy(ptr + size, &d, sizeof(d));
@@ -204,20 +205,23 @@ namespace lazy {
 		public:
 			//! @note no allocator
 			static
-			auto operator new(std::size_t size) -> void * { return allocate(size, std::allocator<char>{}); }
+			auto operator new(std::size_t size) -> void * {
+				std::allocator<char> alloc;
+				return allocate(size, std::addressof(alloc));
+			}
 
 			//! @note allocator, non-member function
 			static
 			auto operator new(std::size_t size, std::allocator_arg_t, const auto &... args) -> void * {
 				static_assert(sizeof...(args), "if allocator_arg_t is first argument, the second argument must be an allocator");
-				return allocate(size, args...);
+				return allocate(size, std::addressof(args)...);
 			}
 
 			//! @note allocator, member function
 			static
 			auto operator new(std::size_t size, const auto &, std::allocator_arg_t, const auto &... args) -> void * {
 				static_assert(sizeof...(args), "if allocator_arg_t is first argument, the second argument must be an allocator");
-				return allocate(size, args...);
+				return allocate(size, std::addressof(args)...);
 			}
 
 			//! @note must handle all versions of @code{.cpp} operator new() @encode
