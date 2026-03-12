@@ -328,7 +328,11 @@ namespace lazy {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
-			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
+			internal::active_root ar{
+				.top = std::coroutine_handle<promise_type>::from_promise(*this)
+			};
+
+			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::addressof(ar)); }
 
 			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
@@ -338,6 +342,8 @@ namespace lazy {
 		auto valueless() const noexcept -> bool { return not handle; }
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
+
+		//TODO: replace wait, wait_for, wait_until and get as those will be handled by ABI-wrapper
 
 		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { wait_with([]() noexcept { return false; }); }
 
@@ -353,20 +359,15 @@ namespace lazy {
 		}
 
 		template<typename Func>
-		auto wait_with(Func func) -> bool /*TODO: [C++26] pre(not valueless())*/ {
+		auto wait_with(Func func) -> bool /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return true;
 			try {
 				auto & promise{handle.promise()};
-				internal::active_root ar{
-					.top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data)),
-					.ctx = std::addressof(func),
-					.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); }
-				};
+				promise.ar.ctx = std::addressof(func);
+				promise.ar.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
 				//TODO: [C++26] contract_assert(ar.top and not ar.top.done());
-				promise.data = reinterpret_cast<std::uintptr_t>(std::addressof(ar));
-				ar.top.resume();
-				promise.data = reinterpret_cast<std::uintptr_t>(ar.top.address());
+				promise.ar.top.resume();
 				return done();
 			} catch(...) {
 				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
