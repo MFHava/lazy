@@ -47,20 +47,11 @@ namespace lazy {
 			struct nested_info final {
 				std::exception_ptr eptr;        //needed for manual stack unwinding
 				std::coroutine_handle<> parent; //directly preceding coroutine
-				promise_base * root;            //bottom of implicit coroutine-"stack" @attention due to possibility of resumption before nesting, this may not actually be the root and must instead be followed recursively (see @c find_root ) to find actual root
+				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
 
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; } 
-
-			static
-			auto find_root(const promise_base & start) noexcept -> promise_base & {
-				//! @attention due to manual resumption of tasks root may not actually point to root => follow chain until we find correct root
-				for(auto ptr{const_cast<promise_base *>(std::addressof(start))};;) {
-					if(auto nested{ptr->get_nested()}) ptr = nested->root;
-					else return *ptr;
-				}
-			}
+			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
 		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
@@ -90,7 +81,8 @@ namespace lazy {
 				};
 
 				//! @note determine suspension here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
-				auto ar{reinterpret_cast<active_root *>(find_root(*this).data)};
+				auto nested{get_nested()};
+				auto ar{reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
 				return awaiter{ar->suspend()};
 			}
 
@@ -132,7 +124,8 @@ namespace lazy {
 					prev_top = n.parent = self;
 
 					//! @attention push @c other onto stack
-					n.root = std::addressof(find_root(self.promise()));
+					const auto & nested{self.promise().get_nested()};
+					n.root = nested ? nested->root : std::addressof(self.promise());
 
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
@@ -145,9 +138,8 @@ namespace lazy {
 					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
 					if(n.eptr) std::rethrow_exception(n.eptr);
 
-					//! @attention task may have been nested after iteration was started
-					//TODO: [C++26] contract_assert(n.root);
-					auto ar{reinterpret_cast<active_root *>(find_root(*n.root).data)};
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+
 					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
 					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(ar->top.address());
 					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
@@ -242,8 +234,7 @@ namespace lazy {
 				static
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 					if(const auto nested{self.promise().get_nested()}) {
-						//TOOD: [C++26] contract_assert(nested->root);
-						auto ar{reinterpret_cast<active_root *>(find_root(*nested->root).data)};
+						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
 						ar->top = nested->parent;
 						if(not ar->suspend()) return ar->top;
 					}
@@ -266,14 +257,12 @@ namespace lazy {
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					auto & promise{get_handle(other).promise()};
-					//TODO: [C++26] contract_assert(not promise.get_nested());
-					auto top{std::coroutine_handle<>::from_address(reinterpret_cast<void *>(promise.data))};
-					promise.set_nested(n);
+					get_handle(other).promise().set_nested(n);
 					n.parent = self;
-					n.root = std::addressof(find_root(self.promise()));
+					auto nested{self.promise().get_nested()};
+					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->top = top;
+					ar->top = get_handle(other);
 					return ar->suspend() ? std::noop_coroutine() : ar->top;
 				}
 
