@@ -315,7 +315,7 @@ namespace lazy {
 	internal::progress_t progress{1};
 
 
-	//! @brief cooperative synchronous(!) recursive coroutine task
+	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
@@ -324,13 +324,13 @@ namespace lazy {
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
-	struct task final {
+	struct root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
-			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
+			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
 			auto yield_value(internal::progress_t) const noexcept { return this->await_transform(resumption); }
 		};
@@ -378,6 +378,46 @@ namespace lazy {
 			wait();
 			return handle.promise().get_value();
 		}
+
+		root_task(root_task && other) noexcept : handle{std::exchange(other.handle, {})} {}
+		auto operator=(root_task && other) noexcept -> root_task & {
+			std::swap(handle, other.handle);
+			return *this;
+		}
+		~root_task() noexcept { if(handle) handle.destroy(); }
+	private:
+		friend
+		auto internal::get_handle(auto &) noexcept;
+
+		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
+
+		std::coroutine_handle<promise_type> handle;
+	};
+
+
+	//! @brief cooperative synchronous(!) recursive coroutine task
+	//! @tparam Result return type of the task
+	//! supported coroutine statements:
+	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
+	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
+	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
+	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
+	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
+	template<typename Result = void>
+	struct task final {
+		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
+
+		struct promise_type final : internal::task_promise<Result> {
+			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
+
+			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
+
+			auto yield_value(internal::progress_t) const noexcept { return this->await_transform(resumption); }
+		};
+
+		auto valueless() const noexcept -> bool { return not handle; }
+
+		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
 
 		task(task && other) noexcept : handle{std::exchange(other.handle, {})} {}
 		auto operator=(task && other) noexcept -> task & {

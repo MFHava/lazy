@@ -11,7 +11,7 @@
 #include <lazy/lazy.hpp>
 
 TEST_CASE("trivial", "[lazy]") {
-	auto t{[]() -> lazy::task<int> { co_return 1; }()};
+	auto t{[]() -> lazy::root_task<int> { co_return 1; }()};
 	REQUIRE(not t.valueless());
 
 	t.wait();
@@ -22,7 +22,7 @@ TEST_CASE("trivial", "[lazy]") {
 }
 
 TEST_CASE("throwing_makes_valueless", "[lazy]") {
-	auto t{[]() -> lazy::task<void> {
+	auto t{[]() -> lazy::root_task<void> {
 		throw 0;
 		co_return;
 	}()};
@@ -76,7 +76,7 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 	std::allocator<double> d;
 
 
-	auto t{[](std::allocator_arg_t, auto...) -> lazy::task<int> {
+	auto t{[](std::allocator_arg_t, auto...) -> lazy::root_task<int> {
 		co_return 1;
 	}(std::allocator_arg, pa)};
 
@@ -84,7 +84,7 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 }
 
 TEST_CASE("nesting", "[lazy]") {
-	auto t{[]() -> lazy::task<double> {
+	auto t{[]() -> lazy::root_task<double> {
 		auto v0 = co_await []() -> lazy::task<int> { co_return 10; }();
 		REQUIRE(v0 == 10);
 
@@ -140,7 +140,7 @@ auto fibonacci() -> lazy::generator<int> {
 }
 
 TEST_CASE("generator fib", "[generator]") {
-	auto t = []() -> lazy::task<void> {
+	auto t = []() -> lazy::root_task<void> {
 		auto gen{fibonacci()};
 		for(auto beg = co_await gen.begin(); beg != gen.end(); co_await ++beg) {
 			auto && i{*beg};
