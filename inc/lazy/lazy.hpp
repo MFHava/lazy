@@ -37,29 +37,17 @@ namespace lazy {
 		//! @brief internal accessor to handle
 		auto get_handle(auto & val) noexcept { return val.handle; }
 
-		struct identity_t final {
+		template<std::size_t Tag>
+		struct tag_t final {
 			constexpr
 			explicit
-			identity_t(int) noexcept {}
+			tag_t(int) noexcept {}
 		};
 
-		struct resumption_t final {
-			constexpr
-			explicit
-			resumption_t(int) noexcept {}
-		};
-
-		struct progress_t final {
-			constexpr
-			explicit
-			progress_t(int) noexcept {}
-		};
-
-		struct blocked_t final {
-			constexpr
-			explicit
-			blocked_t(int) noexcept {}
-		};
+		using resumption_t = tag_t<0>;
+		using progress_t = tag_t<1>;
+		using identity_t = tag_t<2>;
+		using blocked_t = tag_t<3>;
 
 		using clock = std::chrono::steady_clock;
 		using duration = clock::duration;
