@@ -324,7 +324,7 @@ namespace lazy {
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
-	struct root_task final {
+	struct [[nodiscard]] root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
@@ -405,7 +405,7 @@ namespace lazy {
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
-	struct task final {
+	struct [[nodiscard]] task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
@@ -446,7 +446,7 @@ namespace lazy {
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	template<typename Reference, typename Value = void>
-	class generator final {
+	class [[nodiscard]] generator final {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
 
