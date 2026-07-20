@@ -16,7 +16,7 @@ TEST_CASE("trivial", "[lazy]") {
 	auto t{[]() -> lazy::root_task<int> { co_return 1; }()};
 	REQUIRE(not t.valueless());
 
-	t.wait();
+	REQUIRE(t.wait() == lazy::state::done);
 	REQUIRE(not t.valueless());
 
 	REQUIRE(t.get() == 1);
@@ -82,6 +82,7 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 		co_return 1;
 	}(std::allocator_arg, pa)};
 
+	REQUIRE(t.wait() == lazy::state::done);
 	REQUIRE(t.get() == 1);
 }
 
@@ -98,6 +99,7 @@ TEST_CASE("nesting", "[lazy]") {
 		co_return v0 / v1;
 	}()};
 
+	REQUIRE(t.wait() == lazy::state::done);
 	REQUIRE(t.get() == 5.0);
 }
 
@@ -112,15 +114,49 @@ TEST_CASE("time", "[lazy]") {
 		}();
 	}()};
 
-	REQUIRE(!t.wait_for(0ms));
+	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
 	std::this_thread::sleep_for(50ms);
-	REQUIRE(!t.wait_for(0ms));
+	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
 	std::this_thread::sleep_for(50ms);
-	REQUIRE(t.wait_for(0ms));
+	REQUIRE(t.wait_for(0ms) == lazy::state::done);
 	const auto elapsed{t.elapsed()};
 	printf("elapsed: %zums\n", elapsed.count());
 	REQUIRE(elapsed < 100ms);
 }
+
+TEST_CASE("mutex", "[lazy]") {
+	using namespace std::chrono_literals;
+	static lazy::mutex m;
+
+	auto t0{[]() -> lazy::root_task<int> {
+		co_return co_await m.locked([]() -> lazy::task<int> {
+			printf("t0 locked m\n");
+			std::this_thread::sleep_for(10ms);
+			co_yield lazy::progress;
+			printf("t0 unlocking m\n");
+			co_return 10;
+		}());
+	}()};
+
+	auto t1{[]() -> lazy::root_task<> {
+		co_await m.locked([]() -> lazy::task<> {
+			printf("t1 locked m\n");
+			co_yield lazy::progress;
+			printf("t1 unlocking m\n");
+		}());
+	}()};
+
+	REQUIRE(t0.wait_for(1ms) == lazy::state::suspended);
+	for(auto i{0}; i < 3; ++i) {
+		REQUIRE(t1.wait_for(1ms) == lazy::state::blocked);
+		printf("t1 blocked\n");
+	}
+	REQUIRE(t0.wait() == lazy::state::done);
+	REQUIRE(t0.get() == 10);
+
+	REQUIRE(t1.wait() == lazy::state::done);
+}
+
 
 //TODO: timed waiting, etc.
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
@@ -189,6 +225,6 @@ TEST_CASE("generator fib", "[generator]") {
 	using namespace std::chrono_literals;
 	while(not t.wait_for(0ms)) printf(" ===== ");
 #else
-	t.wait();
+	REQUIRE(t.wait() == lazy::state::done);
 #endif
 }

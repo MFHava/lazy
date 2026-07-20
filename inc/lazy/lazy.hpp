@@ -5,6 +5,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #pragma once
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <cstdint>
@@ -13,12 +14,20 @@
 #include <optional>
 #include <coroutine>
 #include <type_traits>
+#include <system_error>
 
 //TODO: root_generator?
 //TODO: co_await timed{generator}?
+//TODO: introduce id-type instead of using const void *?
 namespace lazy {
 	template<typename>
 	struct task;
+
+	enum class state {
+		done,      //!< execution completed
+		suspended, //!< suspended
+		blocked,   //!< suspended due to synchronization primitive
+	};
 
 	//! @brief tag to time wall clock of execution of a @c task
 	template<typename T>
@@ -27,6 +36,12 @@ namespace lazy {
 	namespace internal {
 		//! @brief internal accessor to handle
 		auto get_handle(auto & val) noexcept { return val.handle; }
+
+		struct identity_t final {
+			constexpr
+			explicit
+			identity_t(int) noexcept {}
+		};
 
 		struct resumption_t final {
 			constexpr
@@ -40,6 +55,12 @@ namespace lazy {
 			progress_t(int) noexcept {}
 		};
 
+		struct blocked_t final {
+			constexpr
+			explicit
+			blocked_t(int) noexcept {}
+		};
+
 		using clock = std::chrono::steady_clock;
 		using duration = clock::duration;
 		using time_point = clock::time_point;
@@ -50,6 +71,9 @@ namespace lazy {
 			//! @note inlined @c function_ref
 			void * ctx;
 			bool (*fptr)(void *) noexcept;
+
+			//! @note @c true => we were suspended due to being blocked
+			bool blocked;
 
 			auto suspend() const noexcept -> bool { return fptr(ctx); }
 
@@ -105,9 +129,9 @@ namespace lazy {
 				else throw;
 			}
 
-			auto await_transform(internal::resumption_t) const noexcept {
+			auto await_transform(resumption_t) const noexcept {
 				struct awaiter final {
-					internal::root_data & rd;
+					root_data & rd;
 
 					auto await_ready() const noexcept { return not rd.suspend(); }
 					void await_suspend(std::coroutine_handle<>) noexcept { rd.timer.suspend(); }
@@ -115,6 +139,41 @@ namespace lazy {
 				};
 
 				//! @note determine root here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
+				auto nested{get_nested()};
+				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
+			}
+		private:
+			struct blocked_awaiter final {
+				root_data * rd;
+
+				static
+				auto await_ready() noexcept { return false; }
+
+				template<typename Promise>
+				void await_suspend(std::coroutine_handle<Promise> self) noexcept {
+					auto nested{self.promise().get_nested()};
+					rd = reinterpret_cast<root_data *>(nested ? nested->root->data : self.promise().data);
+					rd->blocked = true;
+					rd->timer.suspend();
+				}
+
+				void await_resume() noexcept { rd->timer.resume(); }
+			};
+		public:
+			static
+			auto await_transform(blocked_t) noexcept { return blocked_awaiter{}; }
+
+			//TODO: should this awaiter also support suspension?
+			auto await_transform(identity_t) const noexcept {
+				struct awaiter final {
+					const root_data & rd;
+
+					static
+					auto await_ready() noexcept { return true; }
+					static
+					void await_suspend(std::coroutine_handle<>) noexcept {}
+					auto await_resume() const noexcept -> const void * { return std::addressof(rd); }
+				};
 				auto nested{get_nested()};
 				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
 			}
@@ -386,6 +445,12 @@ namespace lazy {
 		};
 	}
 
+	//! @brief tag to request identity of root of coroutine stack
+	inline
+	constexpr
+	internal::identity_t identity{1};
+
+
 	//! @brief tag to yield progress within a @c task or @c generator
 	inline
 	constexpr
@@ -401,13 +466,7 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
-	//! supported coroutine statements:
-	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
-	//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
-	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
-	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
+	//! @see task for supported coroutine statements
 	template<typename Result = void>
 	struct [[nodiscard]] root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -428,13 +487,13 @@ namespace lazy {
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
 
-		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { wait_with([]() noexcept { return false; }); }
+		auto wait() -> state /*TODO: [C++26] pre(not valueless()) post(result: result == state::blocked or done())*/ { return wait_with([]() noexcept { return false; }); }
 
 		template<typename Rep, typename Period>
-		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> bool /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
+		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
 
 		template<typename Clock, typename Duration>
-		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> bool /*TODO: [C++26] pre(not valueless())*/ {
+		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
 #if __cpp_lib_chrono >= 201907L
 			static_assert(std::chrono::is_clock_v<Clock>);
 #endif
@@ -442,26 +501,27 @@ namespace lazy {
 		}
 
 		template<typename Func>
-		auto wait_with(Func func) -> bool /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
+		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
-			if(done()) return true;
+			if(done()) return state::done;
 			try {
 				auto & promise{handle.promise()};
-				promise.root.ctx = std::addressof(func);
-				promise.root.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+				auto & root{promise.root};
+				root.ctx = std::addressof(func);
+				root.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+				root.blocked = false;
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
 				promise.root.top.resume();
-				return done();
+				return done() ? state::done
+				              : root.blocked ? state::blocked
+				                             : state::suspended;
 			} catch(...) {
 				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
 				throw;
 			}
 		}
 
-		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(not valueless()) post(done())*/ {
-			wait();
-			return handle.promise().get_value();
-		}
+		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(done())*/ { return handle.promise().get_value(); }
 
 		auto elapsed() const -> std::chrono::milliseconds /*TODO: [C++26] pre(not valueless())*/ { return std::chrono::duration_cast<std::chrono::milliseconds>(handle.promise().root.timer.elapsed()); }
 
@@ -487,6 +547,7 @@ namespace lazy {
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+	//!  * @code{.cpp} co_await identity; @endcode yields unique identification of coroutine stack
 	//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
@@ -528,6 +589,7 @@ namespace lazy {
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await task; @endcode block this generator until the awaited @c task is completed, then yield its result if any
+	//!  * @code{.cpp} co_await identity; @endcode yields unique identification of coroutine stack
 	//!  * @code{.cpp} co_await timed{task}; @endcode block this generator until the awaited @c task is completed, then yield the time it took to complete and its result if any
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generator until awaited generator yields next value
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
@@ -665,6 +727,36 @@ namespace lazy {
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
 		std::coroutine_handle<promise_type> handle;
+	};
+
+
+	//! @brief synchronization primitive
+	class mutex final {
+		std::atomic<const void *> state{nullptr};
+	public:
+		mutex() noexcept =default;
+		mutex(const mutex &) =delete;
+		auto operator=(const mutex &) -> mutex & =delete;
+		~mutex() noexcept { if(state) std::terminate(); } //tried to destroy locked mutex
+
+		//! @brief execute @c t whilst @c *this is locked
+		template<typename T>
+		auto locked(task<T> t) -> task<T> /*TODO: [C++26] pre(not t.valueless())*/ {
+			const auto id{co_await identity};
+
+			for(const void * ptr{nullptr}; not state.compare_exchange_strong(ptr, id); ptr = nullptr) {
+				if(ptr == id) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
+				co_await internal::blocked_t{1};
+			}
+
+			const struct guard final {
+				mutex & m;
+
+				~guard() noexcept { m.state.store(nullptr); }
+			} g{*this};
+
+			co_return co_await std::move(t);
+		}
 	};
 }
 
