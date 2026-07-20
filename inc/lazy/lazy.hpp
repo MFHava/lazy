@@ -10,12 +10,19 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <optional>
 #include <coroutine>
 #include <type_traits>
 
+//TODO: root_generator?
+//TODO: co_await timed{generator}?
 namespace lazy {
 	template<typename>
 	struct task;
+
+	//! @brief tag to time wall clock of execution of a @c task
+	template<typename T>
+	struct timed final { task<T> t; };
 
 	namespace internal {
 		//! @brief internal accessor to handle
@@ -33,6 +40,10 @@ namespace lazy {
 			progress_t(int) noexcept {}
 		};
 
+		using clock = std::chrono::steady_clock;
+		using duration = clock::duration;
+		using time_point = clock::time_point;
+
 		struct active_root final {
 			std::coroutine_handle<> top;
 
@@ -41,6 +52,31 @@ namespace lazy {
 			bool (*fptr)(void *) noexcept;
 
 			auto suspend() const noexcept -> bool { return fptr(ctx); }
+
+			class {
+				duration elapsed_{};
+				std::optional<time_point> last_resume; //set => coroutine stack is running...
+
+				static
+				auto now() noexcept -> time_point { return clock::now(); }
+			public:
+				void resume() /*TODO: [C++26] post(last_resume)*/ { if(!last_resume) last_resume = now(); }
+
+				auto suspend() -> duration /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
+					elapsed_ += (now() - *last_resume);
+					last_resume.reset();
+					return elapsed_;
+				}
+
+				auto suspend_resume() -> duration /*TODO: [C++26] pre(last_resume) post(last_resume)*/ {
+					const auto n{now()};
+					elapsed_ += (n - *last_resume);
+					last_resume = n;
+					return elapsed_;
+				}
+
+				auto elapsed() const -> duration /*TODO: [C++26] pre(not last_resume)*/ { return elapsed_; }
+			} timer;
 		};
 
 		class promise_base {
@@ -49,9 +85,6 @@ namespace lazy {
 				std::coroutine_handle<> parent; //directly preceding coroutine
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
-
-			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
 		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
@@ -59,8 +92,11 @@ namespace lazy {
 			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
 			std::uintptr_t data;
 
+			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
+			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
+
 			static
-			auto initial_suspend() noexcept -> std::suspend_always { return {}; }
+			auto initial_suspend() noexcept { return initial_awaiter{}; }
 			static
 			auto final_suspend() noexcept { return pop_awaiter{}; }
 
@@ -71,32 +107,81 @@ namespace lazy {
 
 			auto await_transform(internal::resumption_t) const noexcept {
 				struct awaiter final {
-					const bool suspend;
+					internal::active_root & ar;
 
-					auto await_ready() const noexcept { return not suspend; }
-					static
-					void await_suspend(std::coroutine_handle<>) noexcept {}
-					static
-					void await_resume() noexcept {}
+					auto await_ready() const noexcept { return not ar.suspend(); }
+					void await_suspend(std::coroutine_handle<>) noexcept { ar.timer.suspend(); }
+					void await_resume() noexcept { ar.timer.resume(); }
 				};
 
-				//! @note determine suspension here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
+				//! @note determine root here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
 				auto nested{get_nested()};
-				auto ar{reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
-				return awaiter{ar->suspend()};
+				return awaiter{*reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
 			}
+		protected:
+			template<typename Other>
+			struct push_awaiter {
+				nested_info n;
+			protected:
+				Other other;
+				internal::duration elapsed;
+			public:
+				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
 
+				static
+				auto await_ready() noexcept { return false; }
+
+				template<typename Promise>
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+					get_handle(other).promise().set_nested(n);
+					n.parent = self;
+					auto nested{self.promise().get_nested()};
+					n.root = nested ? nested->root : std::addressof(self.promise());
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+					ar->top = get_handle(other);
+					if(ar->suspend()) {
+						elapsed = ar->timer.suspend();
+						return std::noop_coroutine();
+					} else {
+						elapsed = ar->timer.suspend_resume();
+						return ar->top;
+					}
+				}
+
+				auto await_resume() /*TODO: [C++26] pre(get_handle(other).done())*/ {
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+					ar->timer.resume(); //! @note make sure timer is active
+					elapsed = ar->timer.suspend_resume() - elapsed;
+					if(n.eptr) std::rethrow_exception(n.eptr);
+				}
+			};
+		public:
 			template<typename T>
 			static
 			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
 				struct awaiter : push_awaiter<task<T>> {
-					auto await_resume() const -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.done())*/ {
+					auto await_resume() -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.done())*/ {
 						push_awaiter<task<T>>::await_resume();
 						return std::move(internal::get_handle(this->other).promise()).get_value();
 					}
 				};
 				return awaiter{std::move(other)};
 			}
+		private:
+			template<typename T>
+			class timed_awaiter final : public push_awaiter<task<T>> {
+			public:
+				timed_awaiter(task<T> other) : push_awaiter<task<T>>{std::move(other)} {}
+
+				auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
+					push_awaiter<task<T>>::await_resume();
+					if constexpr(std::is_void_v<T>) return std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed);
+					else return std::make_pair(std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed), std::move(internal::get_handle(this->other).promise()).get_value());
+				}
+			};
+		public:
+			template<typename T>
+			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return timed_awaiter{std::move(other.task)}; }
 
 			template<typename Other, bool Initial>
 			class iterator_awaiter final {
@@ -131,14 +216,18 @@ namespace lazy {
 					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
 					other_promise.set_nested(n);
 
-					return ar->suspend() ? std::noop_coroutine() : ar->top;
+					if(ar->suspend()) {
+						ar->timer.suspend();
+						return std::noop_coroutine();
+					} else return ar->top;
 				}
 
 				auto await_resume() {
+					auto ar{reinterpret_cast<active_root *>(n.root->data)};
+					ar->timer.resume();
+
 					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
 					if(n.eptr) std::rethrow_exception(n.eptr);
-
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
 
 					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
 					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(ar->top.address());
@@ -226,6 +315,26 @@ namespace lazy {
 				reinterpret_cast<deleter_t>(d)(static_cast<std::byte *>(ptr), size);
 			}
 		private:
+			class initial_awaiter final {
+				promise_base * ptr;
+			public:
+				static
+				auto await_ready() noexcept { return false; }
+
+				template<typename Promise>
+				void await_suspend(std::coroutine_handle<Promise> self) noexcept { ptr = std::addressof(self.promise()); }
+
+				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
+					if(auto nested{ptr->get_nested()}) {
+						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
+						ar->timer.resume();
+					} else {
+						auto ar{reinterpret_cast<active_root *>(ptr->data)};
+						ar->timer.resume();
+					}
+				}
+			};
+
 			struct pop_awaiter final {
 				static
 				auto await_ready() noexcept { return false; }
@@ -236,39 +345,14 @@ namespace lazy {
 					if(const auto nested{self.promise().get_nested()}) {
 						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
 						ar->top = nested->parent;
-						if(not ar->suspend()) return ar->top;
+						if(ar->suspend()) ar->timer.suspend();
+						else return ar->top;
 					}
 					return std::noop_coroutine();
 				}
 
 				static
 				void await_resume() noexcept {}
-			};
-		protected:
-			template<typename Other>
-			class push_awaiter {
-				nested_info n;
-			protected:
-				Other other;
-			public:
-				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other))*/ : other{std::move(other)} {}
-
-				auto await_ready() const noexcept { return get_handle(other).done(); }
-
-				template<typename Promise>
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					get_handle(other).promise().set_nested(n);
-					n.parent = self;
-					auto nested{self.promise().get_nested()};
-					n.root = nested ? nested->root : std::addressof(self.promise());
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->top = get_handle(other);
-					return ar->suspend() ? std::noop_coroutine() : ar->top;
-				}
-
-				auto await_resume() const /*TODO: [C++26] pre(get_handle(other).done())*/ {
-					if(n.eptr) std::rethrow_exception(n.eptr);
-				}
 			};
 		};
 
@@ -320,7 +404,8 @@ namespace lazy {
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
+	//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+	//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
@@ -342,8 +427,6 @@ namespace lazy {
 		auto valueless() const noexcept -> bool { return not handle; }
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
-
-		//TODO: replace wait, wait_for, wait_until and get as those will be handled by ABI-wrapper
 
 		void wait() /*TODO: [C++26] pre(not valueless()) post(done())*/ { wait_with([]() noexcept { return false; }); }
 
@@ -380,6 +463,8 @@ namespace lazy {
 			return handle.promise().get_value();
 		}
 
+		auto elapsed() const -> std::chrono::milliseconds /*TODO: [C++26] pre(not valueless())*/ { return std::chrono::duration_cast<std::chrono::milliseconds>(handle.promise().ar.timer.elapsed()); }
+
 		root_task(root_task && other) noexcept : handle{std::exchange(other.handle, {})} {}
 		auto operator=(root_task && other) noexcept -> root_task & {
 			std::swap(handle, other.handle);
@@ -401,7 +486,8 @@ namespace lazy {
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} [val =] co_await task; @endcode block this task until the awaited @c task is completed, optionally receiving a value
+	//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+	//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
@@ -441,7 +527,8 @@ namespace lazy {
 	//! @tparam Value value type of the generator
 	//! supported coroutine statements:
 	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} [val =] co_await task; @endcode block this generator until the awaited @c task is completed, optionally receiving a value
+	//!  * @code{.cpp} co_await task; @endcode block this generator until the awaited @c task is completed, then yield its result if any
+	//!  * @code{.cpp} co_await timed{task}; @endcode block this generator until the awaited @c task is completed, then yield the time it took to complete and its result if any
 	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generator until awaited generator yields next value
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
@@ -495,15 +582,28 @@ namespace lazy {
 			static
 			void return_void() noexcept {}
 		private:
-			struct yield_awaiter {
+			class yield_awaiter {
+				promise_base * ptr;
+			public:
 				static
 				auto await_ready() noexcept { return false; }
+
 				//! @note does not check for suspension, as we need to jump back to @c yield_target
 				template<typename Promise>
-				static
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept { return self.promise().yield_target; }
-				static
-				void await_resume() noexcept {}
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept {
+					ptr = std::addressof(self.promise());
+					return self.promise().yield_target;
+				}
+
+				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
+					if(auto nested{ptr->get_nested()}) {
+						auto ar{reinterpret_cast<internal::active_root *>(nested->root->data)};
+						ar->timer.resume();
+					} else {
+						auto ar{reinterpret_cast<internal::active_root *>(ptr->data)};
+						ar->timer.resume();
+					}
+				}
 			};
 		};
 	private:

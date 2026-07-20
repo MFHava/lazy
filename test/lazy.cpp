@@ -5,6 +5,8 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #include <array>
+#include <thread>
+#include <iostream>
 #include <memory_resource>
 
 #include <catch2/catch_test_macros.hpp>
@@ -97,6 +99,27 @@ TEST_CASE("nesting", "[lazy]") {
 	}()};
 
 	REQUIRE(t.get() == 5.0);
+}
+
+//TODO: more complex timer test case
+TEST_CASE("time", "[lazy]") {
+	using namespace std::chrono_literals;
+
+	auto t{[]() -> lazy::root_task<> {
+		co_await []() -> lazy::task<> {
+			std::this_thread::sleep_for(10ms);
+			co_return;
+		}();
+	}()};
+
+	REQUIRE(!t.wait_for(0ms));
+	std::this_thread::sleep_for(50ms);
+	REQUIRE(!t.wait_for(0ms));
+	std::this_thread::sleep_for(50ms);
+	REQUIRE(t.wait_for(0ms));
+	const auto elapsed{t.elapsed()};
+	printf("elapsed: %zums\n", elapsed.count());
+	REQUIRE(elapsed < 100ms);
 }
 
 //TODO: timed waiting, etc.
