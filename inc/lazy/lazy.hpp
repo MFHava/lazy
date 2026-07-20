@@ -19,6 +19,7 @@
 //TODO: root_generator?
 //TODO: co_await timed{generator}?
 //TODO: introduce id-type instead of using const void *?
+//TODO: is there an easy way to unify timer for all awaiters?
 namespace lazy {
 	template<typename>
 	struct task;
@@ -72,7 +73,7 @@ namespace lazy {
 				static
 				auto now() noexcept -> time_point { return clock::now(); }
 			public:
-				void resume() /*TODO: [C++26] post(last_resume)*/ { if(!last_resume) last_resume = now(); }
+				void resume() /*TODO: [C++26] post(last_resume)*/ { if(not last_resume) last_resume = now(); }
 
 				auto suspend() -> duration /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
 					elapsed_ += (now() - *last_resume);
@@ -353,7 +354,7 @@ namespace lazy {
 				return allocate(size, std::addressof(args)...);
 			}
 
-			//! @note must handle all versions of @code{.cpp} operator new() @encode
+			//! @note must handle all versions of @code{.cpp} operator new() @endcode
 			static
 			void operator delete(void * ptr, std::size_t size) noexcept {
 				std::uintptr_t d;
