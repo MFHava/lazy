@@ -44,7 +44,7 @@ namespace lazy {
 		using duration = clock::duration;
 		using time_point = clock::time_point;
 
-		struct active_root final {
+		struct root_data final {
 			std::coroutine_handle<> top;
 
 			//! @note inlined @c function_ref
@@ -88,7 +88,7 @@ namespace lazy {
 		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
-			//! if promise is at bottom of coroutine-"stack" => @c active_root*
+			//! if promise is at bottom of coroutine-"stack" => @c root_data*
 			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
 			std::uintptr_t data;
 
@@ -107,16 +107,16 @@ namespace lazy {
 
 			auto await_transform(internal::resumption_t) const noexcept {
 				struct awaiter final {
-					internal::active_root & ar;
+					internal::root_data & rd;
 
-					auto await_ready() const noexcept { return not ar.suspend(); }
-					void await_suspend(std::coroutine_handle<>) noexcept { ar.timer.suspend(); }
-					void await_resume() noexcept { ar.timer.resume(); }
+					auto await_ready() const noexcept { return not rd.suspend(); }
+					void await_suspend(std::coroutine_handle<>) noexcept { rd.timer.suspend(); }
+					void await_resume() noexcept { rd.timer.resume(); }
 				};
 
 				//! @note determine root here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
 				auto nested{get_nested()};
-				return awaiter{*reinterpret_cast<active_root *>(nested ? nested->root->data : data)};
+				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
 			}
 		protected:
 			template<typename Other>
@@ -137,21 +137,21 @@ namespace lazy {
 					n.parent = self;
 					auto nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->top = get_handle(other);
-					if(ar->suspend()) {
-						elapsed = ar->timer.suspend();
+					auto rd{reinterpret_cast<root_data *>(n.root->data)};
+					rd->top = get_handle(other);
+					if(rd->suspend()) {
+						elapsed = rd->timer.suspend();
 						return std::noop_coroutine();
 					} else {
-						elapsed = ar->timer.suspend_resume();
-						return ar->top;
+						elapsed = rd->timer.suspend_resume();
+						return rd->top;
 					}
 				}
 
 				auto await_resume() /*TODO: [C++26] pre(get_handle(other).done())*/ {
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->timer.resume(); //! @note make sure timer is active
-					elapsed = ar->timer.suspend_resume() - elapsed;
+					auto rd{reinterpret_cast<root_data *>(n.root->data)};
+					rd->timer.resume(); //! @note make sure timer is active
+					elapsed = rd->timer.suspend_resume() - elapsed;
 					if(n.eptr) std::rethrow_exception(n.eptr);
 				}
 			};
@@ -212,27 +212,27 @@ namespace lazy {
 					const auto & nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
 
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
+					auto rd{reinterpret_cast<root_data *>(n.root->data)};
+					rd->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
 					other_promise.set_nested(n);
 
-					if(ar->suspend()) {
-						ar->timer.suspend();
+					if(rd->suspend()) {
+						rd->timer.suspend();
 						return std::noop_coroutine();
-					} else return ar->top;
+					} else return rd->top;
 				}
 
 				auto await_resume() {
-					auto ar{reinterpret_cast<active_root *>(n.root->data)};
-					ar->timer.resume();
+					auto rd{reinterpret_cast<root_data *>(n.root->data)};
+					rd->timer.resume();
 
-					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do apart from rethrowing
+					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do aprdt from rethrowing
 					if(n.eptr) std::rethrow_exception(n.eptr);
 
 					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(ar->top.address());
+					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(rd->top.address());
 					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
-					ar->top = prev_top;
+					rd->top = prev_top;
 
 					if constexpr(Initial) return std::move(other);
 				}
@@ -326,11 +326,11 @@ namespace lazy {
 
 				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
 					if(auto nested{ptr->get_nested()}) {
-						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
-						ar->timer.resume();
+						auto rd{reinterpret_cast<root_data *>(nested->root->data)};
+						rd->timer.resume();
 					} else {
-						auto ar{reinterpret_cast<active_root *>(ptr->data)};
-						ar->timer.resume();
+						auto rd{reinterpret_cast<root_data *>(ptr->data)};
+						rd->timer.resume();
 					}
 				}
 			};
@@ -343,10 +343,10 @@ namespace lazy {
 				static
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 					if(const auto nested{self.promise().get_nested()}) {
-						auto ar{reinterpret_cast<active_root *>(nested->root->data)};
-						ar->top = nested->parent;
-						if(ar->suspend()) ar->timer.suspend();
-						else return ar->top;
+						auto rd{reinterpret_cast<root_data *>(nested->root->data)};
+						rd->top = nested->parent;
+						if(rd->suspend()) rd->timer.suspend();
+						else return rd->top;
 					}
 					return std::noop_coroutine();
 				}
@@ -413,11 +413,11 @@ namespace lazy {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
-			internal::active_root ar{
+			internal::root_data root{
 				.top = std::coroutine_handle<promise_type>::from_promise(*this)
 			};
 
-			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::addressof(ar)); }
+			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root)); }
 
 			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
@@ -447,10 +447,10 @@ namespace lazy {
 			if(done()) return true;
 			try {
 				auto & promise{handle.promise()};
-				promise.ar.ctx = std::addressof(func);
-				promise.ar.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-				//TODO: [C++26] contract_assert(ar.top and not ar.top.done());
-				promise.ar.top.resume();
+				promise.root.ctx = std::addressof(func);
+				promise.root.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+				//TODO: [C++26] contract_assert(data.top and not data.top.done());
+				promise.root.top.resume();
 				return done();
 			} catch(...) {
 				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
@@ -463,7 +463,7 @@ namespace lazy {
 			return handle.promise().get_value();
 		}
 
-		auto elapsed() const -> std::chrono::milliseconds /*TODO: [C++26] pre(not valueless())*/ { return std::chrono::duration_cast<std::chrono::milliseconds>(handle.promise().ar.timer.elapsed()); }
+		auto elapsed() const -> std::chrono::milliseconds /*TODO: [C++26] pre(not valueless())*/ { return std::chrono::duration_cast<std::chrono::milliseconds>(handle.promise().root.timer.elapsed()); }
 
 		root_task(root_task && other) noexcept : handle{std::exchange(other.handle, {})} {}
 		auto operator=(root_task && other) noexcept -> root_task & {
@@ -597,11 +597,11 @@ namespace lazy {
 
 				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
 					if(auto nested{ptr->get_nested()}) {
-						auto ar{reinterpret_cast<internal::active_root *>(nested->root->data)};
-						ar->timer.resume();
+						auto rd{reinterpret_cast<internal::root_data *>(nested->root->data)};
+						rd->timer.resume();
 					} else {
-						auto ar{reinterpret_cast<internal::active_root *>(ptr->data)};
-						ar->timer.resume();
+						auto rd{reinterpret_cast<internal::root_data *>(ptr->data)};
+						rd->timer.resume();
 					}
 				}
 			};
