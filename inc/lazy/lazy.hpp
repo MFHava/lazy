@@ -25,8 +25,8 @@ namespace lazy {
 	struct task;
 
 	enum class state {
-		done,      //!< execution completed
-		suspended, //!< suspended
+		done,      //!< execution completed, result is ready
+		suspended, //!< suspended due to timeout or request
 		blocked,   //!< suspended due to synchronization primitive
 	};
 
@@ -98,6 +98,12 @@ namespace lazy {
 				std::coroutine_handle<> parent; //directly preceding coroutine
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
+
+			template<typename Awaiter>
+			auto create_awaiter() const noexcept -> Awaiter {
+				auto nested{get_nested()};
+				return Awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
+			}
 		public:
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
@@ -126,45 +132,33 @@ namespace lazy {
 					void await_suspend(std::coroutine_handle<>) noexcept { rd.timer.suspend(); }
 					void await_resume() noexcept { rd.timer.resume(); }
 				};
-
-				//! @note determine root here to avoid redundant suspend-resume when inspecting handle in @c await_suspend ...
-				auto nested{get_nested()};
-				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
+				return create_awaiter<awaiter>();
 			}
-		private:
-			struct set_blocked_awaiter final {
-				root_data * rd;
 
-				static
-				auto await_ready() noexcept { return false; }
+			auto await_transform(set_blocked_t) const noexcept {
+				struct awaiter final {
+					root_data & rd;
 
-				template<typename Promise>
-				void await_suspend(std::coroutine_handle<Promise> self) noexcept {
-					auto nested{self.promise().get_nested()};
-					rd = reinterpret_cast<root_data *>(nested ? nested->root->data : self.promise().data);
-					rd->blocked = true;
-					rd->timer.suspend();
-				}
-
-				void await_resume() noexcept { rd->timer.resume(); }
-			};
-		public:
-			static
-			auto await_transform(set_blocked_t) noexcept { return set_blocked_awaiter{}; }
+					auto await_ready() const noexcept { return false; }
+					void await_suspend(std::coroutine_handle<>) const noexcept {
+						rd.blocked = true;
+						rd.timer.suspend();
+					}
+					void await_resume() const noexcept { rd.timer.resume(); }
+				};
+				return create_awaiter<awaiter>();
+			}
 
 			//TODO: should this awaiter also support suspension?
 			auto await_transform(get_identity_t) const noexcept {
 				struct awaiter final {
 					const root_data & rd;
 
-					static
-					auto await_ready() noexcept { return true; }
-					static
-					void await_suspend(std::coroutine_handle<>) noexcept {}
+					auto await_ready() const noexcept { return true; }
+					void await_suspend(std::coroutine_handle<>) const noexcept {}
 					auto await_resume() const noexcept -> const void * { return std::addressof(rd); }
 				};
-				auto nested{get_nested()};
-				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
+				return create_awaiter<awaiter>();
 			}
 		protected:
 			template<typename Other>
@@ -215,21 +209,23 @@ namespace lazy {
 				};
 				return awaiter{std::move(other)};
 			}
-		private:
-			template<typename T>
-			class timed_awaiter final : public push_awaiter<task<T>> {
-			public:
-				timed_awaiter(task<T> other) : push_awaiter<task<T>>{std::move(other)} {}
 
-				auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
-					push_awaiter<task<T>>::await_resume();
-					if constexpr(std::is_void_v<T>) return std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed);
-					else return std::make_pair(std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed), std::move(internal::get_handle(this->other).promise()).get_value());
-				}
-			};
-		public:
 			template<typename T>
-			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return timed_awaiter{std::move(other.task)}; }
+			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
+				struct awaiter final : push_awaiter<task<T>> {
+					awaiter(task<T> other) : push_awaiter<task<T>>{std::move(other)} {}
+
+					auto await_resume() /*TODO: [C++26] pre(other.done())*/ requires std::is_void_v<T> {
+						push_awaiter<task<T>>::await_resume();
+						return std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed);
+					}
+					auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
+						push_awaiter<task<T>>::await_resume();
+						return std::make_pair(std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed), std::move(internal::get_handle(this->other).promise()).get_value());
+					}
+				};
+				return awaiter{std::move(other.task)};
+			}
 
 			template<typename Other, bool Initial>
 			class iterator_awaiter final {
@@ -373,13 +369,9 @@ namespace lazy {
 				void await_suspend(std::coroutine_handle<Promise> self) noexcept { ptr = std::addressof(self.promise()); }
 
 				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
-					if(auto nested{ptr->get_nested()}) {
-						auto rd{reinterpret_cast<root_data *>(nested->root->data)};
-						rd->timer.resume();
-					} else {
-						auto rd{reinterpret_cast<root_data *>(ptr->data)};
-						rd->timer.resume();
-					}
+					auto nested{ptr->get_nested()};
+					auto rd{reinterpret_cast<root_data *>(nested ? nested->root->data : ptr->data)};
+					rd->timer.resume();
 				}
 			};
 
@@ -647,13 +639,9 @@ namespace lazy {
 				}
 
 				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
-					if(auto nested{ptr->get_nested()}) {
-						auto rd{reinterpret_cast<internal::root_data *>(nested->root->data)};
-						rd->timer.resume();
-					} else {
-						auto rd{reinterpret_cast<internal::root_data *>(ptr->data)};
-						rd->timer.resume();
-					}
+					auto nested{ptr->get_nested()};
+					auto rd{reinterpret_cast<internal::root_data *>(nested ? nested->root->data : ptr->data)};
+					rd->timer.resume();
 				}
 			};
 		};

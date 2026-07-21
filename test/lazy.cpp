@@ -74,10 +74,6 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 	std::pmr::monotonic_buffer_resource mbr{buffer.data(), buffer.size()};
 	std::pmr::polymorphic_allocator<int> pa{&mbr};
 
-
-	std::allocator<double> d;
-
-
 	auto t{[](std::allocator_arg_t, auto...) -> lazy::root_task<int> {
 		co_return 1;
 	}(std::allocator_arg, pa)};
@@ -120,7 +116,7 @@ TEST_CASE("time", "[lazy]") {
 	std::this_thread::sleep_for(50ms);
 	REQUIRE(t.wait_for(0ms) == lazy::state::done);
 	const auto elapsed{t.elapsed()};
-	printf("elapsed: %zums\n", elapsed.count());
+	printf("elapsed: %lldms\n", elapsed.count());
 	REQUIRE(elapsed < 100ms);
 }
 
