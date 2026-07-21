@@ -47,8 +47,8 @@ namespace lazy {
 
 		using resumption_t = tag_t<0>;
 		using progress_t = tag_t<1>;
-		using identity_t = tag_t<2>;
-		using blocked_t = tag_t<3>;
+		using get_identity_t = tag_t<2>;
+		using set_blocked_t = tag_t<3>;
 
 		using clock = std::chrono::steady_clock;
 		using duration = clock::duration;
@@ -132,7 +132,7 @@ namespace lazy {
 				return awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
 			}
 		private:
-			struct blocked_awaiter final {
+			struct set_blocked_awaiter final {
 				root_data * rd;
 
 				static
@@ -150,10 +150,10 @@ namespace lazy {
 			};
 		public:
 			static
-			auto await_transform(blocked_t) noexcept { return blocked_awaiter{}; }
+			auto await_transform(set_blocked_t) noexcept { return set_blocked_awaiter{}; }
 
 			//TODO: should this awaiter also support suspension?
-			auto await_transform(identity_t) const noexcept {
+			auto await_transform(get_identity_t) const noexcept {
 				struct awaiter final {
 					const root_data & rd;
 
@@ -437,7 +437,7 @@ namespace lazy {
 	//! @brief tag to request identity of root of coroutine stack
 	inline
 	constexpr
-	internal::identity_t identity{1};
+	internal::get_identity_t get_identity{1};
 
 
 	//! @brief tag to yield progress within a @c task or @c generator
@@ -731,11 +731,11 @@ namespace lazy {
 		//! @brief execute @c t whilst @c *this is locked
 		template<typename T>
 		auto locked(task<T> t) -> task<T> /*TODO: [C++26] pre(not t.valueless())*/ {
-			const auto id{co_await identity};
+			const auto id{co_await get_identity};
 
 			for(const void * ptr{nullptr}; not state.compare_exchange_strong(ptr, id); ptr = nullptr) {
 				if(ptr == id) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
-				co_await internal::blocked_t{1};
+				co_await internal::set_blocked_t{1};
 			}
 
 			const struct guard final {
