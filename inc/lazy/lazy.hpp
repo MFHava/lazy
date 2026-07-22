@@ -20,6 +20,15 @@
 //TODO: co_await timed{generator}?
 //TODO: introduce id-type instead of using const void *?
 //TODO: is there an easy way to unify timer for all awaiters?
+
+
+//! @brief coroutine statements supported by all coroutine wrappers:
+//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
+//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+//!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
+//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
+//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
+//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 namespace lazy {
 	template<typename>
 	struct task;
@@ -447,7 +456,8 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
-	//! @see task for supported coroutine statements
+	//! additional supported coroutine statements:
+	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -524,14 +534,8 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
-	//! supported coroutine statements:
+	//! additional supported coroutine statements:
 	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
-	//!  * @code{.cpp} co_await identity; @endcode yields unique identification of coroutine stack
-	//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
-	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
-	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -567,12 +571,7 @@ namespace lazy {
 	//! @brief cooperative synchronous(!) recursive coroutine generator
 	//! @tparam Reference reference type of generator
 	//! @tparam Value value type of the generator
-	//! supported coroutine statements:
-	//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
-	//!  * @code{.cpp} co_await task; @endcode block this generator until the awaited @c task is completed, then yield its result if any
-	//!  * @code{.cpp} co_await identity; @endcode yields unique identification of coroutine stack
-	//!  * @code{.cpp} co_await timed{task}; @endcode block this generator until the awaited @c task is completed, then yield the time it took to complete and its result if any
-	//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this generator until awaited generator yields next value
+	//! additional supported coroutine statements:
 	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	template<typename Reference, typename Value = void>
