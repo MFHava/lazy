@@ -405,8 +405,12 @@ namespace lazy {
 			};
 		};
 
+		struct task_promise_base : promise_base {
+			auto yield_value(progress_t) const noexcept { return this->await_transform(resumption_t{1}); }
+		};
+
 		template<typename T>
-		class task_promise : public promise_base {
+		class task_promise : public task_promise_base {
 			union { T result; };
 			bool initialized{false};
 		public:
@@ -426,7 +430,7 @@ namespace lazy {
 		};
 
 		template<>
-		struct task_promise<void> : promise_base {
+		struct task_promise<void> : task_promise_base {
 			static
 			void return_void() noexcept {}
 
@@ -470,8 +474,6 @@ namespace lazy {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root)); }
 
 			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-
-			auto yield_value(internal::progress_t) const noexcept { return this->await_transform(resumption); }
 		};
 
 		auto valueless() const noexcept -> bool { return not handle; }
@@ -544,8 +546,6 @@ namespace lazy {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-
-			auto yield_value(internal::progress_t) const noexcept { return this->await_transform(resumption); }
 		};
 
 		auto valueless() const noexcept -> bool { return not handle; }
