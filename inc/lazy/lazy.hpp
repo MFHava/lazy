@@ -66,14 +66,16 @@ namespace lazy {
 		struct root_data final {
 			std::coroutine_handle<> top;
 
-			//! @note inlined @c function_ref
-			void * ctx;
-			bool (*fptr)(void *) noexcept;
+			//! @note inlined @code{.cpp} function_ref<bool() const noexcept> @endcode
+			struct {
+				void * ctx;
+				bool (*fptr)(void *) noexcept;
+
+				auto operator()() const noexcept -> bool { return fptr(ctx); }
+			} suspend;
 
 			//! @note @c true => we were suspended due to being blocked
-			bool blocked;
-
-			auto suspend() const noexcept -> bool { return fptr(ctx); }
+			bool blocked; //TODO: optimize out ...
 
 			class {
 				duration elapsed_{};
@@ -500,8 +502,8 @@ namespace lazy {
 			try {
 				auto & promise{handle.promise()};
 				auto & root{promise.root};
-				root.ctx = std::addressof(func);
-				root.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+				root.suspend.ctx = std::addressof(func);
+				root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
 				root.blocked = false;
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
 				promise.root.top.resume();
