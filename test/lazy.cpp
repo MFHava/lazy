@@ -5,6 +5,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #include <array>
+#include <print>
 #include <thread>
 #include <iostream>
 #include <memory_resource>
@@ -45,22 +46,22 @@ TEST_CASE("throwing_makes_valueless", "[lazy]") {
 
 
 		template<typename U>
-		myallocator(myallocator<U> other) : val{other.val} { printf("myallocator::rebind\n"); }
+		myallocator(myallocator<U> other) : val{other.val} { std::println("myallocator::rebind"); }
 
-		myallocator(int val) noexcept : val{val} { printf("myallocator(int)\n"); }
+		myallocator(int val) noexcept : val{val} { std::println("myallocator(int)"); }
 
-		myallocator(const myallocator & other) : val{other.val} { printf("myallocator(const myallocator &)\n"); }
-		myallocator(myallocator && other) noexcept : val{std::exchange(other.val, -2)} { printf("myallocator(const myallocator &)\n"); }
-		auto operator=(const myallocator & other) noexcept -> myallocator & { printf("myallocator::operator=(const myallocator &)\n"); val = other.val; return *this; }
-		auto operator=(myallocator && other) -> myallocator & { printf("myallocator::operator=(myallocator &&)\n"); val = std::exchange(other.val, -1); return *this; }
-		~myallocator() noexcept { printf("~myallocator()\n"); }
+		myallocator(const myallocator & other) : val{other.val} { std::println("myallocator(const myallocator &)"); }
+		myallocator(myallocator && other) noexcept : val{std::exchange(other.val, -2)} { std::println("myallocator(const myallocator &)"); }
+		auto operator=(const myallocator & other) noexcept -> myallocator & { std::println("myallocator::operator=(const myallocator &)"); val = other.val; return *this; }
+		auto operator=(myallocator && other) -> myallocator & { std::println("myallocator::operator=(myallocator &&)"); val = std::exchange(other.val, -1); return *this; }
+		~myallocator() noexcept { std::println("~myallocator()"); }
 
 		auto allocate(std::size_t size) -> T * {
-			printf("myallocator::allocate: %d\n", val);
+			std::println("myallocator::allocate: {}", val);
 			return (T*)std::malloc(size);
 		}
 		void deallocate(T * ptr, std::size_t) {
-			printf("myallocator::deallocate: %d\n", val);
+			std::println("myallocator::deallocate: {}", val);
 			std::free(ptr);
 		}
 	};
@@ -116,7 +117,7 @@ TEST_CASE("time", "[lazy]") {
 	std::this_thread::sleep_for(50ms);
 	REQUIRE(t.wait_for(0ms) == lazy::state::done);
 	const auto elapsed{t.elapsed()};
-	printf("elapsed: %lldms\n", elapsed.count());
+	std::println("elapsed: {}", elapsed);
 	REQUIRE(elapsed < 100ms);
 }
 
@@ -126,26 +127,26 @@ TEST_CASE("mutex", "[lazy]") {
 
 	auto t0{[]() -> lazy::root_task<int> {
 		co_return co_await m.locked([]() -> lazy::task<int> {
-			printf("t0 locked m\n");
+			std::println("t0 locked m");
 			std::this_thread::sleep_for(10ms);
 			co_yield lazy::progress;
-			printf("t0 unlocking m\n");
+			std::println("t0 unlocking m");
 			co_return 10;
 		}());
 	}()};
 
 	auto t1{[]() -> lazy::root_task<> {
 		co_await m.locked([]() -> lazy::task<> {
-			printf("t1 locked m\n");
+			std::println("t1 locked m");
 			co_yield lazy::progress;
-			printf("t1 unlocking m\n");
+			std::println("t1 unlocking m");
 		}());
 	}()};
 
 	REQUIRE(t0.wait_for(1ms) == lazy::state::suspended);
 	for(auto i{0}; i < 3; ++i) {
 		REQUIRE(t1.wait_for(1ms) == lazy::state::blocked);
-		printf("t1 blocked\n");
+		std::println("t1 blocked");
 	}
 	REQUIRE(t0.wait() == lazy::state::done);
 	REQUIRE(t0.get() == 10);
@@ -169,7 +170,7 @@ auto yolo() -> lazy::generator<char> {
 
 
 auto flipflop() -> lazy::generator<int> {
-	printf("flipflop\n");
+	std::println("flipflop");
 	for(int i = 0; i < 8; ++i) {
 		co_await lazy::resumption;
 		co_yield i % 2;
@@ -179,7 +180,7 @@ auto flipflop() -> lazy::generator<int> {
 
 auto iota() -> lazy::generator<int> {
 	co_await flipflop();
-	printf("iota\n");
+	std::println("iota");
 	for(int i = 0; i < 10; ++i) {
 		co_yield i;
 	}
@@ -187,7 +188,7 @@ auto iota() -> lazy::generator<int> {
 
 auto fibonacci() -> lazy::generator<int> {
 	co_await iota();
-	printf("fibonacci\n");
+	std::println("fibonacci");
 	auto a = 0, b = 1;
 	for (;;) {
 		co_yield std::exchange(a, std::exchange(b, a + b));
@@ -201,25 +202,25 @@ TEST_CASE("generator fib", "[generator]") {
 			auto && i{*beg};
 
 			if(i > 1000) break;
-			std::printf("%d ", i);
+			std::print("{} ", i);
 
 			co_await []() -> lazy::task<void> {
-				std::printf("nested task\n");
+				std::println("nested task");
 				co_return;
 			}(); 
 
 			auto g{yolo()};
-			for(auto b = co_await g.begin(); b != g.end(); co_await ++b) std::printf("%c", *b);
-			std::printf("\n");
+			for(auto b = co_await g.begin(); b != g.end(); co_await ++b) std::print("{}", *b);
+			std::println();
 		}
 
-		std::printf("%s\n", (co_await []() -> lazy::task<std::string> { co_return "=========== DONE ==========="; }()).c_str());
+		std::println("{}", (co_await []() -> lazy::task<std::string> { co_return "=========== DONE ==========="; }()).c_str());
 	}();
 
 
 #if 0
 	using namespace std::chrono_literals;
-	while(not t.wait_for(0ms)) printf(" ===== ");
+	while(not t.wait_for(0ms)) std::print(" ===== ");
 #else
 	REQUIRE(t.wait() == lazy::state::done);
 #endif

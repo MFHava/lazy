@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.26)
 project(Lazy)
 
 add_library(lazy INTERFACE)
-	target_compile_features(lazy INTERFACE cxx_std_20)
+	target_compile_features(lazy INTERFACE cxx_std_23)
 	target_include_directories(lazy INTERFACE "inc")
 	if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 		target_compile_options(lazy INTERFACE -Wall -Wextra -Wpedantic -Wconversion)
