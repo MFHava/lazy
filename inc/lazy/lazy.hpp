@@ -5,8 +5,10 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #pragma once
+#include <span>
 #include <atomic>
 #include <chrono>
+#include <format>
 #include <memory>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +17,7 @@
 #include <coroutine>
 #include <type_traits>
 #include <system_error>
+#include <source_location>
 
 //TODO: root_generator?
 //TODO: introduce id-type instead of using const void *?
@@ -22,6 +25,7 @@
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+//!  * @code{.cpp} co_await [fatal|error|warning|info|debug|trace]{fmt-string|args...}; @endcode create log of the respective severity
 //!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
 //!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
@@ -44,6 +48,8 @@ namespace lazy {
 		suspended, //!< suspended due to timeout or request
 		blocked,   //!< suspended due to synchronization primitive
 	};
+
+	enum class log_level { fatal, error, warning, info, debug, trace, };
 
 	//! @brief tag to time wall clock of execution of a @c task
 	template<typename T>
@@ -133,7 +139,43 @@ namespace lazy {
 					else return elapsed_ + (now() - *last_resume);
 				}
 			} timer;
+
+			struct {
+				const log_level level;
+				std::vector<std::string> messages; //TODO: allocators?
+
+				void add_log_entry(std::source_location loc, log_level level, std::string_view fmt, std::format_args args) { //TODO: move to source-file...
+					if(this->level < level) return;
+
+					auto & out{messages.emplace_back()};
+					using enum log_level;
+					switch(level) {
+						case fatal:   out += "FATAL";   break;
+						case error:   out += "ERROR";   break;
+						case warning: out += "WARNING"; break;
+						case info:    out += "INFO";    break;
+						case debug:   out += "DEBUG";   break;
+						case trace:   out += "TRACE";   break;
+						default: std::unreachable();
+					}
+					std::format_to(std::back_inserter(out), ";{}:{}:{};", loc.file_name(), loc.line(), loc.column());
+					std::vformat_to(std::back_inserter(out), fmt, args);
+				}
+			} logging;
 		};
+
+		struct log_message_base {
+			log_level level;
+			std::string_view fmt;
+		};
+
+		template<typename FmtArgs>
+		auto make_log_message(log_level level, std::string_view fmt, FmtArgs args) {
+			struct [[nodiscard("must be awaited to take effect")]] message final : log_message_base {
+				FmtArgs args;
+			};
+			return message{level, fmt, std::move(args)};
+		}
 
 		class promise_base;
 
@@ -207,7 +249,22 @@ namespace lazy {
 				};
 				return awaiter{{}, get_root()};
 			}
-		private:
+
+			template<std::derived_from<log_message_base> T>
+			auto await_transform(T log, std::source_location loc = std::source_location::current()) {
+				struct awaiter final : std::suspend_always {
+					root_data & rd;
+					T log;
+					std::source_location loc;
+
+					auto await_suspend(std::coroutine_handle<>) -> bool {
+						rd.logging.add_log_entry(loc, log.level, log.fmt, log.args);
+						return rd.suspend();
+					}
+				};
+				return awaiter{{}, get_root(), log, loc};
+			}
+		protected:
 			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
 				nested_info n;
@@ -388,6 +445,23 @@ namespace lazy {
 	internal::progress_t progress{1};
 
 
+	//TODO: documentation
+	template<typename... Args>
+	auto error(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::error, fmt.get(), std::make_format_args(args...)); }
+	//TODO: documentation
+	template<typename... Args>
+	auto warning(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::warning, fmt.get(), std::make_format_args(args...)); }
+	//TODO: documentation
+	template<typename... Args>
+	auto info(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::info, fmt.get(), std::make_format_args(args...)); }
+	//TODO: documentation
+	template<typename... Args>
+	auto debug(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::debug, fmt.get(), std::make_format_args(args...)); }
+	//TODO: documentation
+	template<typename... Args>
+	auto trace(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::trace, fmt.get(), std::make_format_args(args...)); }
+
+
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
 	template<typename Result = void>
@@ -395,11 +469,16 @@ namespace lazy {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
-			internal::root_data root{
-				.top = std::coroutine_handle<promise_type>::from_promise(*this)
-			};
+			internal::root_data root;
 
-			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root)); }
+			promise_type() noexcept : promise_type{log_level::trace} {} //TODO: remove this ctor?
+
+			promise_type(log_level level, auto &&... /*args*/) noexcept : root{.top = std::coroutine_handle<promise_type>::from_promise(*this), .logging{.level = level}} { //free function with no allocator
+				this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+			}
+			promise_type(auto & /*this*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with no allocator
+			promise_type(std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //free function with allocator
+			promise_type(auto & /*this*/, std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with allocator
 
 			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 		};
@@ -446,6 +525,8 @@ namespace lazy {
 		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
+
+		auto log() const -> std::span<const std::string> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
 	private:
 		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 

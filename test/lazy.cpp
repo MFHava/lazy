@@ -69,8 +69,6 @@ TEST_CASE("throwing_not_makes_valueless", "[lazy]") {
 		}
 	};
 
-
-
 TEST_CASE("stateless_allocator", "[lazy]") {
 	myallocator<bool> a{10};
 
@@ -126,6 +124,7 @@ TEST_CASE("time", "[lazy]") {
 	REQUIRE(elapsed < 2ms);
 }
 
+//TODO: more complex test case for mutex (including threads and thread migration)
 TEST_CASE("mutex", "[lazy]") {
 	using namespace std::chrono_literals;
 	static lazy::mutex m;
@@ -162,6 +161,17 @@ TEST_CASE("mutex", "[lazy]") {
 	t1.result();
 }
 
+//TODO: more complex logging test case
+TEST_CASE("logging", "[lazy]") {
+	auto t = [](auto) -> lazy::root_task<> {
+		co_await lazy::warning("This is visible");
+		co_await lazy::debug("This is invisible");
+		co_await lazy::error("This is once again visible");
+	}(lazy::log_level::info);
+
+	REQUIRE(t.wait() == lazy::state::done);
+	std::println("Log: {}", t.log());
+}
 
 //TODO: timed waiting, etc.
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
