@@ -106,19 +106,19 @@ TEST_CASE("time", "[lazy]") {
 
 	auto t{[]() -> lazy::root_task<> {
 		co_await []() -> lazy::task<> {
-			std::this_thread::sleep_for(10ms);
+			std::this_thread::sleep_for(1ms);
 			co_return;
 		}();
 	}()};
 
 	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
-	std::this_thread::sleep_for(50ms);
+	std::this_thread::sleep_for(10ms);
 	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
-	std::this_thread::sleep_for(50ms);
+	std::this_thread::sleep_for(10ms);
 	REQUIRE(t.wait_for(0ms) == lazy::state::done);
 	const auto elapsed{t.elapsed()};
-	std::println("elapsed: {}", elapsed);
-	REQUIRE(elapsed < 100ms);
+	std::println("elapsed: {}", std::chrono::duration_cast<std::chrono::milliseconds>(elapsed));
+	REQUIRE(elapsed < 2ms);
 }
 
 TEST_CASE("mutex", "[lazy]") {

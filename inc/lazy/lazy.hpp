@@ -30,6 +30,9 @@
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 //!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 namespace lazy {
+	using clock = std::chrono::steady_clock;
+	using duration = clock::duration;
+
 	template<typename>
 	struct task;
 
@@ -59,10 +62,6 @@ namespace lazy {
 		using get_identity_t = tag_t<2>;
 		using set_blocked_t = tag_t<3>;
 
-		using clock = std::chrono::steady_clock;
-		using duration = clock::duration;
-		using time_point = clock::time_point;
-
 		struct root_data final {
 			std::coroutine_handle<> top;
 
@@ -79,10 +78,10 @@ namespace lazy {
 
 			class {
 				duration elapsed_{};
-				std::optional<time_point> last_resume; //set => coroutine stack is running...
+				std::optional<clock::time_point> last_resume; //set => coroutine stack is running...
 
 				static
-				auto now() noexcept -> time_point { return clock::now(); }
+				auto now() noexcept -> clock::time_point { return clock::now(); }
 			public:
 				void resume() /*TODO: [C++26] post(last_resume)*/ { if(not last_resume) last_resume = now(); }
 
@@ -177,7 +176,7 @@ namespace lazy {
 				nested_info n;
 			protected:
 				Other other;
-				internal::duration elapsed;
+				duration elapsed;
 			public:
 				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
 
@@ -226,13 +225,13 @@ namespace lazy {
 				struct awaiter final : push_awaiter<task<T>> {
 					awaiter(task<T> other) : push_awaiter<task<T>>{std::move(other)} {}
 
-					auto await_resume() /*TODO: [C++26] pre(other.done())*/ requires std::is_void_v<T> {
+					auto await_resume() -> duration /*TODO: [C++26] pre(other.done())*/ requires std::is_void_v<T> {
 						push_awaiter<task<T>>::await_resume();
-						return std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed);
+						return this->elapsed;
 					}
-					auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
+					auto await_resume() -> std::pair<duration, T> /*TODO: [C++26] pre(other.done())*/ {
 						push_awaiter<task<T>>::await_resume();
-						return std::make_pair(std::chrono::duration_cast<std::chrono::milliseconds>(this->elapsed), std::move(internal::get_handle(this->other).promise()).get_value());
+						return std::make_pair(this->elapsed, std::move(internal::get_handle(this->other).promise()).get_value());
 					}
 				};
 				return awaiter{std::move(other.task)};
@@ -485,7 +484,7 @@ namespace lazy {
 		auto wait() -> state /*TODO: [C++26] pre(not valueless()) post(result: result == state::blocked or done())*/ { return wait_with([]() noexcept { return false; }); }
 
 		template<typename Rep, typename Period>
-		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(std::chrono::steady_clock::now() + duration); }
+		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(clock::now() + duration); }
 
 		template<typename Clock, typename Duration>
 		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
@@ -518,7 +517,7 @@ namespace lazy {
 
 		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(done())*/ { return handle.promise().get_value(); }
 
-		auto elapsed() const -> std::chrono::milliseconds /*TODO: [C++26] pre(not valueless())*/ { return std::chrono::duration_cast<std::chrono::milliseconds>(handle.promise().root.timer.elapsed()); }
+		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
 
 		root_task(root_task && other) noexcept : handle{std::exchange(other.handle, {})} {}
 		auto operator=(root_task && other) noexcept -> root_task & {
