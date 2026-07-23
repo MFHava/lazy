@@ -188,14 +188,16 @@ namespace lazy {
 				return create_awaiter<awaiter>();
 			}
 
-			//TODO: should this awaiter also support suspension?
 			auto await_transform(get_identity_t) const noexcept {
 				struct awaiter final {
-					const root_data & rd;
+					root_data & rd;
 
-					auto await_ready() const noexcept { return true; }
-					void await_suspend(std::coroutine_handle<>) const noexcept {}
-					auto await_resume() const noexcept -> const void * { return std::addressof(rd); }
+					auto await_ready() const noexcept { return not rd.suspend(); }
+					void await_suspend(std::coroutine_handle<>) const noexcept { rd.timer.suspend(); }
+					auto await_resume() noexcept -> const void * {
+						rd.timer.resume();
+						return std::addressof(rd);
+					}
 				};
 				return create_awaiter<awaiter>();
 			}
