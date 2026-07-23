@@ -49,7 +49,13 @@ namespace lazy {
 		blocked,   //!< suspended due to synchronization primitive
 	};
 
-	enum class log_level { fatal, error, warning, info, debug, trace, };
+	enum class log_level { error, warning, info, debug, trace, };
+
+	struct log_message final {
+		std::source_location loc;
+		log_level level;
+		std::string description;
+	};
 
 	//! @brief tag to time wall clock of execution of a @c task
 	template<typename T>
@@ -142,25 +148,7 @@ namespace lazy {
 
 			struct {
 				const log_level level;
-				std::vector<std::string> messages; //TODO: allocators?
-
-				void add_log_entry(std::source_location loc, log_level level, std::string_view fmt, std::format_args args) { //TODO: move to source-file...
-					if(this->level < level) return;
-
-					auto & out{messages.emplace_back()};
-					using enum log_level;
-					switch(level) {
-						case fatal:   out += "FATAL";   break;
-						case error:   out += "ERROR";   break;
-						case warning: out += "WARNING"; break;
-						case info:    out += "INFO";    break;
-						case debug:   out += "DEBUG";   break;
-						case trace:   out += "TRACE";   break;
-						default: std::unreachable();
-					}
-					std::format_to(std::back_inserter(out), ";{}:{}:{};", loc.file_name(), loc.line(), loc.column());
-					std::vformat_to(std::back_inserter(out), fmt, args);
-				}
+				std::vector<log_message> messages; //TODO: allocators?
 			} logging;
 		};
 
@@ -258,7 +246,7 @@ namespace lazy {
 					std::source_location loc;
 
 					auto await_suspend(std::coroutine_handle<>) -> bool {
-						rd.logging.add_log_entry(loc, log.level, log.fmt, log.args);
+						if(rd.logging.level >= log.level) rd.logging.messages.emplace_back(loc, log.level, std::vformat(log.fmt, log.args));
 						return rd.suspend();
 					}
 				};
@@ -526,7 +514,7 @@ namespace lazy {
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
 
-		auto log() const -> std::span<const std::string> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
+		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
 	private:
 		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 

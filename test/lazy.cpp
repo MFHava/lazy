@@ -6,6 +6,7 @@
 
 #include <array>
 #include <print>
+#include <ranges>
 #include <thread>
 #include <iostream>
 #include <memory_resource>
@@ -170,7 +171,7 @@ TEST_CASE("logging", "[lazy]") {
 	}(lazy::log_level::info);
 
 	REQUIRE(t.wait() == lazy::state::done);
-	std::println("Log: {}", t.log());
+	std::println("Log: {}", t.log() | std::views::transform([](const auto & msg) -> std::string_view { return msg.description; }));
 }
 
 //TODO: timed waiting, etc.
