@@ -124,10 +124,39 @@ namespace lazy {
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
 			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
 
-			static
-			auto initial_suspend() noexcept { return initial_awaiter{}; }
-			static
-			auto final_suspend() noexcept { return pop_awaiter{}; }
+			auto initial_suspend() noexcept {
+				struct awaiter final {
+					promise_base & self;
+
+					auto await_ready() const noexcept { return false; }
+					void await_suspend(std::coroutine_handle<>) const noexcept {}
+					void await_resume() noexcept {
+						auto nested{self.get_nested()};
+						auto rd{reinterpret_cast<root_data *>(nested ? nested->root->data : self.data)};
+						rd->timer.resume();
+					}
+				};
+				return awaiter{*this};
+			}
+
+			auto final_suspend() noexcept {
+				struct awaiter final {
+					promise_base & self;
+
+					auto await_ready() const noexcept { return false; }
+					auto await_suspend(std::coroutine_handle<>) noexcept -> std::coroutine_handle<> {
+						if(const auto nested{self.get_nested()}) {
+							auto rd{reinterpret_cast<root_data *>(nested->root->data)};
+							rd->top = nested->parent;
+							if(rd->suspend()) rd->timer.suspend();
+							else return rd->top;
+						}
+						return std::noop_coroutine();
+					}
+					void await_resume() const noexcept {}
+				};
+				return awaiter{*this};
+			}
 
 			void unhandled_exception() {
 				if(auto n{this->get_nested()}) n->eptr = std::current_exception();
@@ -368,42 +397,6 @@ namespace lazy {
 				//TODO: [C++26] contract_assert(d);
 				reinterpret_cast<deleter_t>(d)(static_cast<std::byte *>(ptr), size);
 			}
-		private:
-			class initial_awaiter final {
-				promise_base * ptr;
-			public:
-				static
-				auto await_ready() noexcept { return false; }
-
-				template<typename Promise>
-				void await_suspend(std::coroutine_handle<Promise> self) noexcept { ptr = std::addressof(self.promise()); }
-
-				void await_resume() const /*TODO: [C++26] pre(ptr)*/ {
-					auto nested{ptr->get_nested()};
-					auto rd{reinterpret_cast<root_data *>(nested ? nested->root->data : ptr->data)};
-					rd->timer.resume();
-				}
-			};
-
-			struct pop_awaiter final {
-				static
-				auto await_ready() noexcept { return false; }
-
-				template<typename Promise>
-				static
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					if(const auto nested{self.promise().get_nested()}) {
-						auto rd{reinterpret_cast<root_data *>(nested->root->data)};
-						rd->top = nested->parent;
-						if(rd->suspend()) rd->timer.suspend();
-						else return rd->top;
-					}
-					return std::noop_coroutine();
-				}
-
-				static
-				void await_resume() noexcept {}
-			};
 		};
 
 		struct task_promise_base : promise_base {
