@@ -49,10 +49,10 @@ namespace lazy {
 		blocked,   //!< suspended due to synchronization primitive
 	};
 
-	enum class log_level { error, warning, info, debug, trace, };
+	enum class log_level { fatal, error, warning, info, debug, trace, };
 
 	struct log_message final {
-		std::source_location loc;
+		std::source_location location;
 		log_level level;
 		std::string description;
 	};
@@ -209,9 +209,16 @@ namespace lazy {
 			static
 			auto final_suspend() noexcept { return pop_awaiter{}; }
 
-			void unhandled_exception() {
+			void unhandled_exception(std::source_location loc = std::source_location::current()) {
 				if(auto n{this->get_nested()}) n->eptr = std::current_exception();
-				else throw;
+				else {
+					//! @note loc will not identify the actual throw-site, due to the coroutine body transformation
+					auto & rd{*reinterpret_cast<root_data *>(data)};
+					try { throw; }
+					catch(const std::exception & exc) { rd.logging.messages.emplace_back(loc, log_level::fatal, exc.what()); }
+					catch(...) { rd.logging.messages.emplace_back(loc, log_level::fatal, "unknown error"); }
+					throw;
+				}
 			}
 
 			auto await_transform(set_blocked_t) noexcept {

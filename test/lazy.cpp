@@ -168,10 +168,11 @@ TEST_CASE("logging", "[lazy]") {
 		co_await lazy::warning("This is visible");
 		co_await lazy::debug("This is invisible");
 		co_await lazy::error("This is once again visible");
+		throw std::logic_error{"This is an exception"};
 	}(lazy::log_level::info);
 
-	REQUIRE(t.wait() == lazy::state::done);
-	std::println("Log: {}", t.log() | std::views::transform([](const auto & msg) -> std::string_view { return msg.description; }));
+	REQUIRE_THROWS(t.wait());
+	REQUIRE(t.log().size() == 3);
 }
 
 //TODO: timed waiting, etc.
