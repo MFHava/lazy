@@ -152,18 +152,12 @@ namespace lazy {
 			} logging;
 		};
 
-		struct log_message_base {
+		template<typename FmtArgs>
+		struct [[nodiscard("must be awaited to take effect")]] log_message final {
 			log_level level;
 			std::string_view fmt;
+			FmtArgs args;
 		};
-
-		template<typename FmtArgs>
-		auto make_log_message(log_level level, std::string_view fmt, FmtArgs args) {
-			struct [[nodiscard("must be awaited to take effect")]] message final : log_message_base {
-				FmtArgs args;
-			};
-			return message{level, fmt, std::move(args)};
-		}
 
 		class promise_base;
 
@@ -245,11 +239,11 @@ namespace lazy {
 				return awaiter{{}, get_root()};
 			}
 
-			template<std::derived_from<log_message_base> T>
-			auto await_transform(T log, std::source_location loc = std::source_location::current()) {
+			template<typename FmtArgs>
+			auto await_transform(log_message<FmtArgs> log, std::source_location loc = std::source_location::current()) {
 				struct awaiter final : std::suspend_always {
 					root_data & rd;
-					T log;
+					log_message<FmtArgs> log;
 					std::source_location loc;
 
 					auto await_suspend(std::coroutine_handle<>) -> bool {
@@ -442,19 +436,19 @@ namespace lazy {
 
 	//TODO: documentation
 	template<typename... Args>
-	auto error(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::error, fmt.get(), std::make_format_args(args...)); }
+	auto error(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::error, fmt.get(), std::make_format_args(args...)}; }
 	//TODO: documentation
 	template<typename... Args>
-	auto warning(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::warning, fmt.get(), std::make_format_args(args...)); }
+	auto warning(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::warning, fmt.get(), std::make_format_args(args...)}; }
 	//TODO: documentation
 	template<typename... Args>
-	auto info(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::info, fmt.get(), std::make_format_args(args...)); }
+	auto info(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::info, fmt.get(), std::make_format_args(args...)}; }
 	//TODO: documentation
 	template<typename... Args>
-	auto debug(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::debug, fmt.get(), std::make_format_args(args...)); }
+	auto debug(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::debug, fmt.get(), std::make_format_args(args...)}; }
 	//TODO: documentation
 	template<typename... Args>
-	auto trace(std::format_string<Args...> fmt, Args &&... args) { return internal::make_log_message(log_level::trace, fmt.get(), std::make_format_args(args...)); }
+	auto trace(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::trace, fmt.get(), std::make_format_args(args...)}; }
 
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
