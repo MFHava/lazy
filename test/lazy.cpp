@@ -20,11 +20,12 @@ TEST_CASE("trivial", "[lazy]") {
 	REQUIRE(t.wait() == lazy::state::done);
 	REQUIRE(not t.valueless());
 
-	REQUIRE(t.get() == 1);
+	REQUIRE(t.has_result());
+	REQUIRE(t.result() == 1);
 	REQUIRE(not t.valueless());
 }
 
-TEST_CASE("throwing_makes_valueless", "[lazy]") {
+TEST_CASE("throwing_not_makes_valueless", "[lazy]") {
 	auto t{[]() -> lazy::root_task<void> {
 		throw 0;
 		co_return;
@@ -33,7 +34,9 @@ TEST_CASE("throwing_makes_valueless", "[lazy]") {
 
 	try { t.wait(); }
 	catch(...) {}
-	REQUIRE(t.valueless());
+	REQUIRE(not t.valueless());
+	REQUIRE(not t.has_result());
+	t.result();
 }
 
 	template<typename T>
@@ -80,7 +83,8 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 	}(std::allocator_arg, pa)};
 
 	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.get() == 1);
+	REQUIRE(t.has_result());
+	REQUIRE(t.result() == 1);
 }
 
 TEST_CASE("nesting", "[lazy]") {
@@ -97,7 +101,8 @@ TEST_CASE("nesting", "[lazy]") {
 	}()};
 
 	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.get() == 5.0);
+	REQUIRE(t.has_result());
+	REQUIRE(t.result() == 5.0);
 }
 
 //TODO: more complex timer test case
@@ -149,9 +154,12 @@ TEST_CASE("mutex", "[lazy]") {
 		std::println("t1 blocked");
 	}
 	REQUIRE(t0.wait() == lazy::state::done);
-	REQUIRE(t0.get() == 10);
+	REQUIRE(t0.has_result());
+	REQUIRE(t0.result() == 10);
 
 	REQUIRE(t1.wait() == lazy::state::done);
+	REQUIRE(t1.has_result());
+	t1.result();
 }
 
 

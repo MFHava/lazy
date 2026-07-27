@@ -266,7 +266,7 @@ namespace lazy {
 				struct awaiter : push_awaiter<task<T>> {
 					auto await_resume() -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.done())*/ {
 						push_awaiter<task<T>>::await_resume();
-						return std::move(internal::get_handle(this->other).promise()).get_value();
+						return std::move(internal::get_handle(this->other).promise()).get_result();
 					}
 				};
 				return awaiter{std::move(other)};
@@ -283,7 +283,7 @@ namespace lazy {
 					}
 					auto await_resume() -> std::pair<duration, T> /*TODO: [C++26] pre(other.done())*/ {
 						push_awaiter<task<T>>::await_resume();
-						return std::make_pair(this->elapsed, std::move(internal::get_handle(this->other).promise()).get_value());
+						return std::make_pair(this->elapsed, std::move(internal::get_handle(this->other).promise()).get_result());
 					}
 				};
 				return awaiter{std::move(other.task)};
@@ -424,12 +424,15 @@ namespace lazy {
 
 		struct task_promise_base : promise_base {
 			auto yield_value(progress_t) const noexcept { return this->await_transform(resumption_t{1}); }
+
+			auto has_result() const noexcept -> bool { return initialized; }
+		protected:
+			bool initialized{false};
 		};
 
 		template<typename T>
 		class task_promise : public task_promise_base {
 			union { T result; };
-			bool initialized{false};
 		public:
 			task_promise() noexcept {}
 			task_promise(const task_promise &) =delete;
@@ -437,22 +440,20 @@ namespace lazy {
 			~task_promise() noexcept { if(initialized) result.~T(); }
 
 			template<typename U = T>
-			void return_value(U && value) /*TODO: [C++26] pre(not initialized)*/ {
+			void return_value(U && value) noexcept {
 				new(&result) T(std::forward<U>(value));
 				initialized = true;
 			}
 
-			auto get_value() & -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
-			auto get_value() && -> T && /*TODO: [C++26] pre(initialized)*/ { return std::move(result); }
+			auto get_result() & -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
+			auto get_result() && -> T && /*TODO: [C++26] pre(initialized)*/ { return std::move(result); }
 		};
 
 		template<>
 		struct task_promise<void> : task_promise_base {
-			static
-			void return_void() noexcept {}
+			void return_void() noexcept { initialized = true; }
 
-			static
-			void get_value() noexcept {}
+			void get_result() const /*TODO: [C++26] pre(initialized)*/ {}
 		};
 	}
 
@@ -514,25 +515,21 @@ namespace lazy {
 		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return state::done;
-			try {
-				auto & promise{handle.promise()};
-				auto & root{promise.root};
-				root.suspend.ctx = std::addressof(func);
-				root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-				root.blocked = false;
-				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				promise.root.top.resume();
-				return done() ? state::done
-				              : root.blocked ? state::blocked
-				                             : state::suspended;
-			} catch(...) {
-				//! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
-				handle = {};
-				throw;
-			}
+			auto & promise{handle.promise()};
+			auto & root{promise.root};
+			root.suspend.ctx = std::addressof(func);
+			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+			root.blocked = false;
+			//TODO: [C++26] contract_assert(data.top and not data.top.done());
+			promise.root.top.resume();
+			return done() ? state::done
+			              : root.blocked ? state::blocked
+			                             : state::suspended;
 		}
 
-		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(done())*/ { return handle.promise().get_value(); }
+		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return handle.promise().has_result(); }
+
+		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
 	private:
