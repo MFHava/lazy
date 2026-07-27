@@ -21,7 +21,6 @@
 //TODO: introduce id-type instead of using const void *?
 //TODO: is there an easy way to unify timer for all awaiters?
 
-
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
@@ -47,8 +46,30 @@ namespace lazy {
 	struct timed final { task<T> t; };
 
 	namespace internal {
+		template<typename Promise>
+		class unique_handle final {
+			std::coroutine_handle<Promise> handle;
+		public:
+			unique_handle() noexcept =default;
+			unique_handle(std::coroutine_handle<Promise> h) noexcept : handle{h} {}
+			unique_handle(unique_handle && other) noexcept : handle{std::exchange(other.handle, {})} {}
+			auto operator=(unique_handle && other) noexcept -> unique_handle & {
+				std::swap(handle, other.handle);
+				return *this;
+			}
+			~unique_handle() noexcept { if(handle) handle.destroy(); }
+
+			auto done() const /*TODO: [C++26] pre(handle)*/ { return handle.done(); }
+			void resume() /*TODO: [C++26] pre(not done())*/ { handle.resume(); }
+			auto promise() const -> Promise & /*TODO: [C++26] pre(handle)*/ { return handle.promise(); }
+
+			explicit
+			operator bool() const noexcept { return static_cast<bool>(handle); }
+			operator std::coroutine_handle<>() const noexcept { return handle; }
+		};
+
 		//! @brief internal accessor to handle
-		auto get_handle(auto & val) noexcept { return val.handle; }
+		auto get_handle(auto & val) noexcept -> decltype(auto){ return (val.handle); }
 
 		template<std::size_t Tag>
 		struct tag_t final {
@@ -505,7 +526,8 @@ namespace lazy {
 				              : root.blocked ? state::blocked
 				                             : state::suspended;
 			} catch(...) {
-				std::exchange(handle, {}).destroy(); //! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
+				//! @attention mark @c *this as @c valueless to trigger precondition violations on future usage
+				handle = {};
 				throw;
 			}
 		}
@@ -513,22 +535,14 @@ namespace lazy {
 		auto get() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(done())*/ { return handle.promise().get_value(); }
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
-
-		root_task(root_task && other) noexcept : handle{std::exchange(other.handle, {})} {}
-		auto operator=(root_task && other) noexcept -> root_task & {
-			std::swap(handle, other.handle);
-			return *this;
-		}
-		~root_task() noexcept { if(handle) handle.destroy(); }
 	private:
 		friend
-		auto internal::get_handle(auto &) noexcept;
+		auto internal::get_handle(auto &) noexcept -> decltype(auto);
 
 		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
-		std::coroutine_handle<promise_type> handle;
+		internal::unique_handle<promise_type> handle;
 	};
-
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
@@ -547,20 +561,13 @@ namespace lazy {
 		auto valueless() const noexcept -> bool { return not handle; }
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
-
-		task(task && other) noexcept : handle{std::exchange(other.handle, {})} {}
-		auto operator=(task && other) noexcept -> task & {
-			std::swap(handle, other.handle);
-			return *this;
-		}
-		~task() noexcept { if(handle) handle.destroy(); }
 	private:
 		friend
-		auto internal::get_handle(auto &) noexcept;
+		auto internal::get_handle(auto &) noexcept -> decltype(auto);
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
-		std::coroutine_handle<promise_type> handle;
+		internal::unique_handle<promise_type> handle;
 	};
 
 
@@ -646,13 +653,6 @@ namespace lazy {
 			using value_type = value;
 			using difference_type = std::ptrdiff_t;
 
-			iterator(iterator && other) noexcept : handle{std::exchange(other.handle, {})} {}
-			auto operator=(iterator && other) noexcept -> iterator & {
-				std::swap(handle, other.handle);
-				return *this;
-			}
-			~iterator() noexcept { if(handle) handle.destroy(); }
-
 			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ {
 				auto & promise{handle.promise()};
 				//TODO: [C++26] contract_assert(not (promise.data & 1U));
@@ -670,11 +670,11 @@ namespace lazy {
 			friend
 			generator;
 			friend
-			auto internal::get_handle(auto &) noexcept;
+			auto internal::get_handle(auto &) noexcept -> decltype(auto);
 
-			iterator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
+			iterator(internal::unique_handle<promise_type> handle) noexcept : handle{std::move(handle)} {}
 
-			std::coroutine_handle<promise_type> handle;
+			internal::unique_handle<promise_type> handle;
 		};
 	public:
 		auto valueless() const noexcept -> bool { return not handle; }
@@ -685,20 +685,13 @@ namespace lazy {
 		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::promise_base::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
-
-		generator(generator && other) noexcept : handle{std::exchange(other.handle, {})} {}
-		auto operator=(generator && other) noexcept -> generator & {
-			std::swap(handle, other.handle);
-			return *this;
-		}
-		~generator() noexcept { if(handle) handle.destroy(); }
 	private:
 		friend
-		auto internal::get_handle(auto &) noexcept;
+		auto internal::get_handle(auto &) noexcept -> decltype(auto);
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
-		std::coroutine_handle<promise_type> handle;
+		internal::unique_handle<promise_type> handle;
 	};
 
 
