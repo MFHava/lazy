@@ -518,8 +518,6 @@ namespace lazy {
 		};
 
 		auto valueless() const noexcept -> bool { return not handle; }
-
-		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
 	private:
 		friend
 		auto internal::get_handle(auto &) noexcept -> decltype(auto);
