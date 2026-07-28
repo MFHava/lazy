@@ -131,12 +131,6 @@ namespace lazy {
 				promise_base * root;            //bottom of implicit coroutine-"stack"
 			};
 
-			template<typename Awaiter>
-			auto create_awaiter() const noexcept -> Awaiter {
-				auto nested{get_nested()};
-				return Awaiter{*reinterpret_cast<root_data *>(nested ? nested->root->data : data)};
-			}
-
 			auto get_root() const -> const root_data & {
 				auto nested{get_nested()};
 				return *reinterpret_cast<const root_data *>(nested ? nested->root->data : data);
@@ -154,24 +148,21 @@ namespace lazy {
 
 			static
 			auto initial_suspend() noexcept { return std::suspend_always{}; }
-
-			auto final_suspend() noexcept {
-				struct awaiter final {
-					promise_base & self;
-
-					auto await_ready() const noexcept { return false; }
-					auto await_suspend(std::coroutine_handle<>) noexcept -> std::coroutine_handle<> {
-						if(const auto nested{self.get_nested()}) {
-							auto rd{reinterpret_cast<root_data *>(nested->root->data)};
-							rd->top = nested->parent;
-							if(not rd->suspend()) return rd->top;
-						}
-						return std::noop_coroutine();
+		private:
+			struct pop_awaiter final : std::suspend_always {
+				template<typename Promise>
+				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+					if(const auto nested{self.promise().get_nested()}) {
+						auto rd{reinterpret_cast<root_data *>(nested->root->data)};
+						rd->top = nested->parent;
+						if(not rd->suspend()) return rd->top;
 					}
-					void await_resume() const noexcept {}
-				};
-				return awaiter{*this};
-			}
+					return std::noop_coroutine();
+				}
+			};
+		public:
+			static
+			auto final_suspend() noexcept { return pop_awaiter{}; }
 
 			void unhandled_exception() {
 				if(auto n{this->get_nested()}) n->eptr = std::current_exception();
