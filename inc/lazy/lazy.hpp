@@ -202,11 +202,11 @@ namespace lazy {
 				return awaiter{{}, get_root()};
 			}
 		protected:
-			template<typename Other>
-			struct push_awaiter : std::suspend_always {
+			template<typename Other, bool Timed>
+			class push_awaiter final : public std::suspend_always {
 				nested_info n;
-			protected:
 				Other other;
+				//! @note only acecssed when @code{.cpp} Timed == true @endcode
 				duration elapsed;
 			public:
 				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
@@ -219,46 +219,41 @@ namespace lazy {
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto rd{reinterpret_cast<root_data *>(n.root->data)};
 					rd->top = get_handle(other);
-					elapsed = rd->timer.elapsed();
+					if constexpr(Timed) elapsed = rd->timer.elapsed();
 					if(rd->suspend()) return std::noop_coroutine();
 					else return rd->top;
 				}
 
 				auto await_resume() /*TODO: [C++26] pre(get_handle(other).done())*/ {
-					auto rd{reinterpret_cast<root_data *>(n.root->data)};
-					elapsed = rd->timer.elapsed() - elapsed;
 					if(n.eptr) std::rethrow_exception(n.eptr);
+					if constexpr(Timed) {
+						auto rd{reinterpret_cast<root_data *>(n.root->data)};
+						elapsed = rd->timer.elapsed() - elapsed;
+					}
+
+					auto & promise{internal::get_handle(other).promise()};
+					if constexpr(requires { promise.get_result(); }) { //! @note task
+						using Result = decltype(promise.get_result());
+						if constexpr(std::is_void_v<Result>) {
+							if constexpr(Timed) return elapsed;
+							else return;
+						} else {
+							if constexpr(Timed) return std::make_pair(elapsed, std::move(promise).get_result());
+							else return std::move(promise).get_result();
+						}
+					} else { //! @note generator
+						static_assert(not Timed);
+						return;
+					}
 				}
 			};
 		public:
 			template<typename T>
 			static
-			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
-				struct awaiter : push_awaiter<task<T>> {
-					auto await_resume() -> std::add_rvalue_reference_t<T> /*TODO: [C++26] pre(other.done())*/ {
-						push_awaiter<task<T>>::await_resume();
-						return std::move(internal::get_handle(this->other).promise()).get_result();
-					}
-				};
-				return awaiter{std::move(other)};
-			}
+			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, false>{std::move(other)}; }
 
 			template<typename T>
-			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ {
-				struct awaiter final : push_awaiter<task<T>> {
-					awaiter(task<T> other) : push_awaiter<task<T>>{std::move(other)} {}
-
-					auto await_resume() -> duration /*TODO: [C++26] pre(other.done())*/ requires std::is_void_v<T> {
-						push_awaiter<task<T>>::await_resume();
-						return this->elapsed;
-					}
-					auto await_resume() -> std::pair<duration, T> /*TODO: [C++26] pre(other.done())*/ {
-						push_awaiter<task<T>>::await_resume();
-						return std::make_pair(this->elapsed, std::move(internal::get_handle(this->other).promise()).get_result());
-					}
-				};
-				return awaiter{std::move(other.task)};
-			}
+			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, true>{std::move(other.task)}; }
 
 			template<typename Other, bool Initial>
 			class iterator_awaiter final : public std::suspend_always {
@@ -587,7 +582,7 @@ namespace lazy {
 
 			auto await_transform(generator other) /*TODO: [C++26] pre(not other.valueless() and not other.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
 				other.handle.promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter{std::move(other)};
+				return internal::promise_base::push_awaiter<generator, false>{std::move(other)};
 			}
 
 			static
