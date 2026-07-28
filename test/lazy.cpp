@@ -187,7 +187,7 @@ auto flipflop() -> lazy::generator<int> {
 }
 
 auto iota() -> lazy::generator<int> {
-	co_await flipflop();
+	co_yield lazy::elements_of{flipflop()};
 	std::println("iota");
 	for(int i = 0; i < 10; ++i) {
 		co_yield i;
@@ -195,7 +195,7 @@ auto iota() -> lazy::generator<int> {
 }
 
 auto fibonacci() -> lazy::generator<int> {
-	co_await iota();
+	co_yield lazy::elements_of{iota()};
 	std::println("fibonacci");
 	auto a = 0, b = 1;
 	for (;;) {
@@ -233,3 +233,21 @@ TEST_CASE("generator fib", "[generator]") {
 	REQUIRE(t.wait() == lazy::state::done);
 #endif
 }
+
+TEST_CASE("generator elements_of", "[generator]") {
+	auto t{[] -> lazy::root_task<void> {
+		auto outer{[] -> lazy::generator<std::string_view> {
+			co_yield "before";
+			auto inner{[] -> lazy::generator<std::string_view &&, std::string> {
+				for(auto i{0}; i < 5; ++i)
+					co_yield std::format("test {}", i);
+			}()};
+			co_yield lazy::elements_of{std::move(inner)};
+			co_yield "after";
+		}()};
+		for(auto it{co_await outer.begin()}; it != outer.end(); co_await ++it)
+			std::println("{}", *it);
+	}()};
+	REQUIRE(t.wait() == lazy::state::done);
+}
+

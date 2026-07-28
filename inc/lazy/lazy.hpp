@@ -17,7 +17,6 @@
 #include <system_error>
 
 //TODO: root_generator?
-//TODO: co_await timed{generator}?
 //TODO: introduce id-type instead of using const void *?
 
 //! @brief coroutine statements supported by all coroutine wrappers:
@@ -30,6 +29,9 @@
 namespace lazy {
 	using clock = std::chrono::steady_clock;
 	using duration = clock::duration;
+
+	template<typename, typename>
+	struct generator;
 
 	template<typename>
 	struct task;
@@ -46,6 +48,11 @@ namespace lazy {
 	//! @brief tag to time wall clock of execution of a @c task
 	template<typename T>
 	struct timed final { task<T> t; };
+
+	//! @brief tag to yield all elements of a @c generator
+	//! @note no support for general ranges, as those are not really compatible with lazy model
+	template<typename R, typename V>
+	struct elements_of final { generator<R, V> g; };
 
 	namespace internal {
 		template<typename Promise>
@@ -522,13 +529,12 @@ namespace lazy {
 		internal::unique_handle<promise_type> handle;
 	};
 
-
 	//! @brief cooperative synchronous(!) recursive coroutine generator
 	//! @tparam Reference reference type of generator
 	//! @tparam Value value type of the generator
 	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_await generator; @endcode yield elements of @c generator
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
+	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
 	template<typename Reference, typename Value = void>
 	class [[nodiscard]] generator final {
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
@@ -569,11 +575,11 @@ namespace lazy {
 				return awaiter{{}, lval};
 			}
 
-			using internal::promise_base::await_transform;
-
-			auto await_transform(generator other) /*TODO: [C++26] pre(not other.valueless() and not other.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
-				other.handle.promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter<generator, false>{std::move(other)};
+			template<typename R, typename V>
+			requires std::same_as<typename generator<R, V>::yielded, yielded>
+			auto yield_value(elements_of<R, V> other) /*TODO: [C++26] pre(not other.g.valueless() and not internal::get_handle(other.g).promise().yield_target) pre(yield_target and not yield_target.done())*/ {
+				internal::get_handle(other.g).promise().yield_target = yield_target;
+				return internal::promise_base::push_awaiter<generator<R, V>, false>{std::move(other.g)};
 			}
 
 			static
