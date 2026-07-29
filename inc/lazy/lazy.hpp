@@ -55,6 +55,12 @@ namespace lazy {
 	struct elements_of final { generator<R, V> g; };
 
 	namespace internal {
+		template<typename T, typename... U>
+		concept either = (std::same_as<T, U> or ...);
+
+		template<typename T, typename... U>
+		concept neither = not either<T, U...>;
+
 		template<typename Promise>
 		class unique_handle final {
 			std::coroutine_handle<Promise> handle;
@@ -176,26 +182,19 @@ namespace lazy {
 				else throw;
 			}
 
-			auto await_transform(resumption_t) const noexcept {
-				struct awaiter final : std::suspend_always {
-					bool suspend;
-
-					auto await_ready() const noexcept { return not suspend; }
-				};
-				return awaiter{{}, get_root().suspend()};
-			}
-
 			auto await_transform(set_blocked_t) noexcept {
 				get_root().blocked = true;
 				return std::suspend_always{};
 			}
 
-			auto await_transform(get_identity_t) const noexcept {
+			template<either<resumption_t, get_identity_t> T>
+			auto await_transform(T) const noexcept {
 				struct awaiter final : std::suspend_always {
 					const root_data & rd;
 
 					auto await_ready() const noexcept { return not rd.suspend(); }
-					auto await_resume() noexcept -> const void * { return std::addressof(rd); }
+					void await_resume() const noexcept {}
+					auto await_resume() const noexcept -> const void * requires std::same_as<T, get_identity_t> { return std::addressof(rd); }
 				};
 				return awaiter{{}, get_root()};
 			}
