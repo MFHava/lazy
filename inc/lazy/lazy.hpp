@@ -49,7 +49,15 @@ namespace lazy {
 		blocked,   //!< suspended due to synchronization primitive
 	};
 
-	enum class log_level { fatal, error, warning, info, debug, trace, };
+	//TODO: documentation
+	enum class log_level {
+		fatal,
+		error,
+		warning,
+		info,
+		debug,
+		trace,
+	};
 
 	struct log_message final {
 		std::source_location location;
@@ -152,14 +160,23 @@ namespace lazy {
 			} logging;
 		};
 
-		template<typename FmtArgs>
-		struct [[nodiscard("must be awaited to take effect")]] log_message final {
+		template<typename... Args>
+		class log_message : public std::suspend_always {
 			log_level level;
 			std::string_view fmt;
-			FmtArgs args;
+			decltype(std::make_format_args(std::declval<Args>()...)) args;
+		public:
+			log_message(log_level level, std::format_string<Args...> fmt, Args &&... args) noexcept : level{level}, fmt{fmt.get()}, args{std::make_format_args(args...)} {}
+
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self, std::source_location loc = std::source_location::current()) -> bool {
+				auto & rd{self.promise().get_root()};
+				if(rd.logging.level >= level) rd.logging.messages.emplace_back(loc, level, std::vformat(fmt, args));
+				return rd.suspend();
+			}
 		};
 
-		class promise_base;
+		struct promise_base;
 
 		struct nested_info final {
 			std::exception_ptr eptr;        //needed for manual stack unwinding
@@ -167,13 +184,13 @@ namespace lazy {
 			promise_base * root;            //bottom of implicit coroutine-"stack"
 		};
 
-		class promise_base {
+		struct promise_base {
 			auto get_root() const -> const root_data & {
 				auto nested{get_nested()};
 				return *reinterpret_cast<const root_data *>(nested ? nested->root->data : data);
 			}
 			auto get_root() -> root_data & { return const_cast<root_data &>(static_cast<const promise_base *>(this)->get_root()); }
-		public:
+
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
 			//! if promise is at bottom of coroutine-"stack" => @c root_data*
@@ -239,20 +256,8 @@ namespace lazy {
 				return awaiter{{}, get_root()};
 			}
 
-			template<typename FmtArgs>
-			auto await_transform(log_message<FmtArgs> log, std::source_location loc = std::source_location::current()) {
-				struct awaiter final : std::suspend_always {
-					root_data & rd;
-					log_message<FmtArgs> log;
-					std::source_location loc;
-
-					auto await_suspend(std::coroutine_handle<>) -> bool {
-						if(rd.logging.level >= log.level) rd.logging.messages.emplace_back(loc, log.level, std::vformat(log.fmt, log.args));
-						return rd.suspend();
-					}
-				};
-				return awaiter{{}, get_root(), log, loc};
-			}
+			template<typename... Args>
+			auto await_transform(log_message<Args...> log) { return log; }
 		protected:
 			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
@@ -436,19 +441,39 @@ namespace lazy {
 
 	//TODO: documentation
 	template<typename... Args>
-	auto error(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::error, fmt.get(), std::make_format_args(args...)}; }
+	struct [[nodiscard("must be awaited to take effect")]] error final : internal::log_message<Args...> {
+		error(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::error, fmt, std::forward<Args>(args)...} {}
+	};
+	template<typename... Args>
+	error(std::format_string<Args...>, Args &&...) -> error<Args...>;
 	//TODO: documentation
 	template<typename... Args>
-	auto warning(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::warning, fmt.get(), std::make_format_args(args...)}; }
+	struct [[nodiscard("must be awaited to take effect")]] warning final : internal::log_message<Args...> {
+		warning(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::warning, fmt, std::forward<Args>(args)...} {}
+	};
+	template<typename... Args>
+	warning(std::format_string<Args...>, Args &&...) -> warning<Args...>;
 	//TODO: documentation
 	template<typename... Args>
-	auto info(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::info, fmt.get(), std::make_format_args(args...)}; }
+	struct [[nodiscard("must be awaited to take effect")]] info final : internal::log_message<Args...> {
+		info(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::info, fmt, std::forward<Args>(args)...} {}
+	};
+	template<typename... Args>
+	info(std::format_string<Args...>, Args &&...) -> info<Args...>;
 	//TODO: documentation
 	template<typename... Args>
-	auto debug(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::debug, fmt.get(), std::make_format_args(args...)}; }
+	struct [[nodiscard("must be awaited to take effect")]] debug final : internal::log_message<Args...> {
+		debug(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::debug, fmt, std::forward<Args>(args)...} {}
+	};
+	template<typename... Args>
+	debug(std::format_string<Args...>, Args &&...) -> debug<Args...>;
 	//TODO: documentation
 	template<typename... Args>
-	auto trace(std::format_string<Args...> fmt, Args &&... args) { return internal::log_message{log_level::trace, fmt.get(), std::make_format_args(args...)}; }
+	struct [[nodiscard("must be awaited to take effect")]] trace final : internal::log_message<Args...> {
+		trace(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::trace, fmt, std::forward<Args>(args)...} {}
+	};
+	template<typename... Args>
+	trace(std::format_string<Args...>, Args &&...) -> trace<Args...>;
 
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
