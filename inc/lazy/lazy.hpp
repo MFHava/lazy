@@ -98,6 +98,8 @@ namespace lazy {
 		using get_identity_t = tag_t<2>;
 		using set_blocked_t = tag_t<3>;
 
+		struct awaiter_base {};
+
 		struct root_data final {
 			std::coroutine_handle<> top;
 
@@ -137,13 +139,15 @@ namespace lazy {
 			} timer;
 		};
 
-		class promise_base {
-			struct nested_info final {
-				std::exception_ptr eptr;        //needed for manual stack unwinding
-				std::coroutine_handle<> parent; //directly preceding coroutine
-				promise_base * root;            //bottom of implicit coroutine-"stack"
-			};
+		class promise_base;
 
+		struct nested_info final {
+			std::exception_ptr eptr;        //needed for manual stack unwinding
+			std::coroutine_handle<> parent; //directly preceding coroutine
+			promise_base * root;            //bottom of implicit coroutine-"stack"
+		};
+
+		class promise_base {
 			auto get_root() const -> const root_data & {
 				auto nested{get_nested()};
 				return *reinterpret_cast<const root_data *>(nested ? nested->root->data : data);
@@ -252,58 +256,8 @@ namespace lazy {
 			template<typename T>
 			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, true>{std::move(other.task)}; }
 
-			template<typename Other, bool Initial>
-			class iterator_awaiter final : public std::suspend_always {
-				static_assert((Initial and not std::is_reference_v<Other>) or (not Initial and std::is_lvalue_reference_v<Other>));
-
-				Other other;
-				nested_info n;
-				std::coroutine_handle<> prev_top;
-			public:
-				iterator_awaiter(Other other) requires(not Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{other} {}
-				iterator_awaiter(Other other) requires(Initial) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
-
-				template<typename Promise>
-				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					auto & other_promise{get_handle(other).promise()};
-					//TODO: [C++26] contract_assert(not (other_promise.data & 1U));
-
-					//! @attention connect @c other 's @c co_yield with current coroutine frame
-					if constexpr(Initial) other_promise.yield_target = self;
-					//TODO: [C++26] else contract_assert(other_promise.yield_target == self);
-
-					//! @attention store enough context to remove @c other from stack on resumption (as @c generator is not permanently on top of stack)
-					prev_top = n.parent = self;
-
-					//! @attention push @c other onto stack
-					const auto & nested{self.promise().get_nested()};
-					n.root = nested ? nested->root : std::addressof(self.promise());
-
-					auto rd{reinterpret_cast<root_data *>(n.root->data)};
-					rd->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(other_promise.data));
-					other_promise.set_nested(n);
-
-					if(rd->suspend()) return std::noop_coroutine();
-					else return rd->top;
-				}
-
-				auto await_resume() {
-					//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do aprdt from rethrowing
-					if(n.eptr) std::rethrow_exception(n.eptr);
-
-					auto rd{reinterpret_cast<root_data *>(n.root->data)};
-					//! @attention @c other_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-					get_handle(other).promise().data = reinterpret_cast<std::uintptr_t>(rd->top.address());
-					//! @attention pop @c other from stack by restoring the @c top we had on @c await_suspend
-					rd->top = prev_top;
-
-					if constexpr(Initial) return std::move(other);
-				}
-			};
-
-			template<typename T, bool U>
 			static
-			auto await_transform(iterator_awaiter<T, U> other) { return other; }
+			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
 		private:
 			//memory layout:
 			//     [ coroutine frame ] [ deleter ]   [ offset ] [ padding  ] [ allocator ]
@@ -603,19 +557,65 @@ namespace lazy {
 
 			//! @returns awaiter for lazy increment
 			//! @attention the returned awaiter must be awaited on on the coroutine that initially awaited @c generator::begin
-			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return internal::promise_base::iterator_awaiter<iterator &, false>{*this}; }
+			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return iterator_awaiter<false>{*this}; }
 
 			friend
 			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); }
 		private:
 			friend
 			generator;
-			friend
-			auto internal::get_handle(auto &) noexcept -> decltype(auto);
 
 			iterator(internal::unique_handle<promise_type> handle) noexcept : handle{std::move(handle)} {}
 
 			internal::unique_handle<promise_type> handle;
+		};
+
+		template<bool Initial>
+		class iterator_awaiter final : public std::suspend_always, public internal::awaiter_base {
+			using value_type = std::conditional_t<Initial, iterator, iterator &>;
+
+			value_type it;
+			internal::nested_info n;
+			std::coroutine_handle<> prev_top;
+		public:
+			iterator_awaiter(value_type it) /*TODO: [C++26] pre(it.handle and not it.handle.done())*/ : it{std::forward<value_type>(it)} {}
+
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
+				auto & it_promise{it.handle.promise()};
+				//TODO: [C++26] contract_assert(not (it_promise.data & 1U));
+
+				//! @attention connect @c it 's @c co_yield with current coroutine frame
+				if constexpr(Initial) it_promise.yield_target = self;
+				//TODO: [C++26] else contract_assert(it_promise.yield_target == self);
+
+				//! @attention store enough context to remove @c it from stack on resumption (as @c generator is not permanently on top of stack)
+				prev_top = n.parent = self;
+
+				//! @attention push @c it onto stack
+				const auto & nested{self.promise().get_nested()};
+				n.root = nested ? nested->root : std::addressof(self.promise());
+
+				auto rd{reinterpret_cast<internal::root_data *>(n.root->data)};
+				rd->top = std::coroutine_handle<>::from_address(reinterpret_cast<void *>(it_promise.data));
+				it_promise.set_nested(n);
+
+				if(rd->suspend()) return std::noop_coroutine();
+				else return rd->top;
+			}
+
+			auto await_resume() {
+				//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do aprdt from rethrowing
+				if(n.eptr) std::rethrow_exception(n.eptr);
+
+				auto rd{reinterpret_cast<internal::root_data *>(n.root->data)};
+				//! @attention @c it_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
+				it.handle.promise().data = reinterpret_cast<std::uintptr_t>(rd->top.address());
+				//! @attention pop @c it from stack by restoring the @c top we had on @c await_suspend
+				rd->top = prev_top;
+
+				if constexpr(Initial) return std::move(it);
+			}
 		};
 	public:
 		auto valueless() const noexcept -> bool { return not handle; }
@@ -623,7 +623,7 @@ namespace lazy {
 		//! @returns awaiter for the initial iterator
 		//! @attention transfers ownership of the managed coroutine to the resulting iterator
 		//! @attention the returned iterator is bound to the calling coroutine
-		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return internal::promise_base::iterator_awaiter<iterator, true>{std::exchange(handle, {})}; }
+		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return iterator_awaiter<true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 	private:
