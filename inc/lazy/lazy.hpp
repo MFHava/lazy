@@ -20,7 +20,7 @@
 //TODO: introduce id-type instead of using const void *?
 
 //! @brief coroutine statements supported by all coroutine wrappers:
-//!  * @code{.cpp} co_await resumption; @endcode to yield control back from the coroutine to the caller
+//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
 //!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
 //!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
@@ -93,10 +93,9 @@ namespace lazy {
 			tag_t(int) noexcept {}
 		};
 
-		using resumption_t = tag_t<0>;
-		using progress_t = tag_t<1>;
-		using get_identity_t = tag_t<2>;
-		using set_blocked_t = tag_t<3>;
+		using progress_t = tag_t<0>;
+		using get_identity_t = tag_t<1>;
+		using set_blocked_t = tag_t<2>;
 
 		struct awaiter_base {};
 
@@ -191,14 +190,21 @@ namespace lazy {
 				return std::suspend_always{};
 			}
 
-			template<either<resumption_t, get_identity_t> T>
-			auto await_transform(T) const noexcept {
+			auto await_transform(get_identity_t) const noexcept {
 				struct awaiter final : std::suspend_always {
 					const root_data & rd;
 
 					auto await_ready() const noexcept { return not rd.suspend(); }
-					void await_resume() const noexcept {}
-					auto await_resume() const noexcept -> const void * requires std::same_as<T, get_identity_t> { return std::addressof(rd); }
+					auto await_resume() const noexcept -> const void * { return std::addressof(rd); }
+				};
+				return awaiter{{}, get_root()};
+			}
+
+			auto yield_value(progress_t) const noexcept {
+				struct awaiter final : std::suspend_always {
+					const root_data & rd;
+
+					auto await_ready() const noexcept { return not rd.suspend(); }
 				};
 				return awaiter{{}, get_root()};
 			}
@@ -340,8 +346,6 @@ namespace lazy {
 			template<typename U = T>
 			void return_value(U && value) noexcept { result.emplace(std::move(value)); }
 
-			auto yield_value(progress_t) const noexcept { return await_transform(resumption_t{1}); }
-
 			auto has_result() const noexcept -> bool { return result.has_value(); }
 
 			auto get_result() & -> T & /*TODO: [C++26] pre(initialized)*/ { return *result; }
@@ -353,8 +357,6 @@ namespace lazy {
 			bool initialized{false};
 		public:
 			void return_void() noexcept { initialized = true; }
-
-			auto yield_value(progress_t) const noexcept { return await_transform(resumption_t{1}); }
 
 			auto has_result() const noexcept -> bool { return initialized; }
 
@@ -368,12 +370,6 @@ namespace lazy {
 	internal::get_identity_t get_identity{1};
 
 
-	//! @brief tag to yield progress within a @c task or @c generator
-	inline
-	constexpr
-	internal::resumption_t resumption{1};
-
-
 	//! @brief tag to yield progress within a @c task
 	//! @note not supported in @c generator to avoid ambiguity problems
 	inline
@@ -383,8 +379,6 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
-	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -452,8 +446,6 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
-	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -502,6 +494,8 @@ namespace lazy {
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
 			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
+
+			using internal::promise_base::yield_value;
 
 			auto yield_value(yielded val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				ptr = std::addressof(val);

@@ -180,9 +180,9 @@ auto yolo() -> lazy::generator<char> {
 auto flipflop() -> lazy::generator<int> {
 	std::println("flipflop");
 	for(int i = 0; i < 8; ++i) {
-		co_await lazy::resumption;
+		co_yield lazy::progress;
 		co_yield i % 2;
-		co_await lazy::resumption;
+		co_yield lazy::progress;
 	}
 }
 
