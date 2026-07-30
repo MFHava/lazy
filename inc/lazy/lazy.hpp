@@ -473,7 +473,8 @@ namespace lazy {
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
 	template<typename Reference, typename Value = void>
-	class [[nodiscard]] generator final {
+	struct [[nodiscard]] generator final {
+	private:
 		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
 		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
 
@@ -493,7 +494,7 @@ namespace lazy {
 
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
 
-			auto get_return_object() noexcept -> generator { return std::coroutine_handle<promise_type>::from_promise(*this); }
+			auto get_return_object() noexcept { return generator{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
 			using internal::promise_base::yield_value;
 
