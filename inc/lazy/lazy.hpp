@@ -254,7 +254,7 @@ namespace lazy {
 			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, false>{std::move(other)}; }
 
 			template<typename T>
-			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, true>{std::move(other.task)}; }
+			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push_awaiter<task<T>, true>{std::move(other.task)}; }
 
 			static
 			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
