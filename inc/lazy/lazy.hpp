@@ -333,36 +333,30 @@ namespace lazy {
 			}
 		};
 
-		struct task_promise_base : promise_base {
-			auto yield_value(progress_t) const noexcept { return this->await_transform(resumption_t{1}); }
-
-			auto has_result() const noexcept -> bool { return initialized; }
-		protected:
-			bool initialized{false};
-		};
-
 		template<typename T>
-		class task_promise : public task_promise_base {
-			union { T result; };
+		class task_promise : public promise_base {
+			std::optional<T> result;
 		public:
-			task_promise() noexcept {}
-			task_promise(const task_promise &) =delete;
-			auto operator=(const task_promise &) -> task_promise & =delete;
-			~task_promise() noexcept { if(initialized) result.~T(); }
-
 			template<typename U = T>
-			void return_value(U && value) noexcept {
-				new(&result) T(std::forward<U>(value));
-				initialized = true;
-			}
+			void return_value(U && value) noexcept { result.emplace(std::move(value)); }
 
-			auto get_result() & -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
-			auto get_result() && -> T && /*TODO: [C++26] pre(initialized)*/ { return std::move(result); }
+			auto yield_value(progress_t) const noexcept { return await_transform(resumption_t{1}); }
+
+			auto has_result() const noexcept -> bool { return result.has_value(); }
+
+			auto get_result() & -> T & /*TODO: [C++26] pre(initialized)*/ { return *result; }
+			auto get_result() && -> T && /*TODO: [C++26] pre(initialized)*/ { return std::move(*result); }
 		};
 
 		template<>
-		struct task_promise<void> : task_promise_base {
+		class task_promise<void> : public promise_base {
+			bool initialized{false};
+		public:
 			void return_void() noexcept { initialized = true; }
+
+			auto yield_value(progress_t) const noexcept { return await_transform(resumption_t{1}); }
+
+			auto has_result() const noexcept -> bool { return initialized; }
 
 			void get_result() const /*TODO: [C++26] pre(initialized)*/ {}
 		};
