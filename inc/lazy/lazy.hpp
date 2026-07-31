@@ -30,7 +30,7 @@ namespace lazy {
 	using clock = std::chrono::steady_clock;
 	using duration = clock::duration;
 
-	template<typename, typename>
+	template<typename>
 	struct generator;
 
 	template<typename>
@@ -51,8 +51,8 @@ namespace lazy {
 
 	//! @brief tag to yield all elements of a @c generator
 	//! @note no support for general ranges, as those are not really compatible with lazy model
-	template<typename R, typename V>
-	struct elements_of final { generator<R, V> g; };
+	template<typename T>
+	struct elements_of final { generator<T> g; };
 
 	namespace internal {
 		template<typename T, typename... U>
@@ -467,29 +467,16 @@ namespace lazy {
 	};
 
 	//! @brief cooperative synchronous(!) recursive coroutine generator
-	//! @tparam Reference reference type of generator
-	//! @tparam Value value type of the generator
+	//! @tparam Result return type of the generator
 	//! additional supported coroutine statements:
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
-	template<typename Reference, typename Value = void>
+	template<typename Result>
 	struct [[nodiscard]] generator final {
-	private:
-		using value = std::conditional_t<std::is_void_v<Value>, std::remove_cvref_t<Reference>, Value>;
-		static_assert(std::is_object_v<value> and std::is_same_v<std::remove_cvref_t<value>, value>);
-
-		using reference = std::conditional_t<std::is_void_v<Value>, Reference &&, Reference>;
-		static_assert(std::is_reference_v<reference> or (std::is_object_v<reference> and std::is_same_v<std::remove_cv_t<reference>, reference> and std::copy_constructible<reference>));
-
-		using rref = std::conditional_t<std::is_reference_v<reference>, std::remove_reference_t<reference> &&, reference>;
-		static_assert(std::common_reference_with<reference &&, value &>);
-		static_assert(std::common_reference_with<reference &&, rref &&>);
-		static_assert(std::common_reference_with<rref &&, const value &>);
-	public:
-		using yielded = std::conditional_t<std::is_reference_v<reference>, reference, const reference &>;
+		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
 
 		struct promise_type final : internal::promise_base {
-			std::add_pointer_t<yielded> ptr;
+			Result * ptr;
 			std::coroutine_handle<> yield_target;
 
 			promise_type() { this->data = reinterpret_cast<std::uintptr_t>(std::coroutine_handle<promise_type>::from_promise(*this).address()); }
@@ -498,14 +485,9 @@ namespace lazy {
 
 			using internal::promise_base::yield_value;
 
-			auto yield_value(yielded val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
-				ptr = std::addressof(val);
-				return yield_awaiter{};
-			}
-
-			auto yield_value(const std::remove_reference_t<yielded> & lval) requires std::is_rvalue_reference_v<yielded> and std::constructible_from<std::remove_cvref_t<yielded>, const std::remove_reference_t<yielded> &> /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
+			auto yield_value(const Result & lval) requires std::is_copy_constructible_v<Result> /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				struct awaiter final : yield_awaiter {
-					std::remove_cvref_t<yielded> val;
+					Result val;
 
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
 						self.promise().ptr = std::addressof(val);
@@ -515,11 +497,14 @@ namespace lazy {
 				return awaiter{{}, lval};
 			}
 
-			template<typename R, typename V>
-			requires std::same_as<typename generator<R, V>::yielded, yielded>
-			auto yield_value(elements_of<R, V> other) /*TODO: [C++26] pre(not other.g.valueless() and not internal::get_handle(other.g).promise().yield_target) pre(yield_target and not yield_target.done())*/ {
-				internal::get_handle(other.g).promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter<generator<R, V>, false>{std::move(other.g)};
+			auto yield_value(Result && val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
+				ptr = std::addressof(val);
+				return yield_awaiter{};
+			}
+
+			auto yield_value(elements_of<Result> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
+				other.g.handle.promise().yield_target = yield_target;
+				return internal::promise_base::push_awaiter<generator, false>{std::move(other.g)};
 			}
 
 			static
@@ -534,14 +519,14 @@ namespace lazy {
 	private:
 		//! @brief lazy iterator for elements yielded by a coroutine
 		struct iterator final {
-			using value_type = value;
+			using value_type = Result;
 			using difference_type = std::ptrdiff_t;
 
-			auto operator*() const -> reference /*TODO: [C++26] pre(handle and not handle.done())*/ {
+			auto operator*() const -> Result && /*TODO: [C++26] pre(handle and not handle.done())*/ {
 				auto & promise{handle.promise()};
 				//TODO: [C++26] contract_assert(not (promise.data & 1U));
 				auto top{std::coroutine_handle<promise_type>::from_address(reinterpret_cast<void *>(promise.data))};
-				return static_cast<reference>(*top.promise().ptr);
+				return static_cast<Result &&>(*top.promise().ptr);
 			}
 
 			//! @returns awaiter for lazy increment

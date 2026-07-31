@@ -238,7 +238,7 @@ TEST_CASE("generator elements_of", "[generator]") {
 	auto t{[] -> lazy::root_task<void> {
 		auto outer{[] -> lazy::generator<std::string_view> {
 			co_yield "before";
-			auto inner{[] -> lazy::generator<std::string_view &&, std::string> {
+			auto inner{[] -> lazy::generator<std::string_view> {
 				for(auto i{0}; i < 5; ++i)
 					co_yield std::format("test {}", i);
 			}()};
@@ -250,4 +250,30 @@ TEST_CASE("generator elements_of", "[generator]") {
 	}()};
 	REQUIRE(t.wait() == lazy::state::done);
 }
+
+TEST_CASE("generator move-only", "[generator]") {
+	struct move_only {
+		move_only() {}
+		move_only(const move_only &) =delete;
+		move_only(move_only &&) noexcept {}
+		auto operator=(const move_only &) -> move_only & =delete;
+		auto operator=(move_only &&) noexcept -> move_only & { return *this; }
+		~move_only() noexcept {}
+	};
+
+	auto t{[] -> lazy::root_task<void> {
+		auto g{[] -> lazy::generator<move_only> {
+			co_yield move_only{};
+			move_only mo;
+			//error: co_yield mo;
+		}()};
+		for(auto it{co_await g.begin()}; it != g.end(); co_await ++it) {
+			(void)*it;
+		}
+	}()};
+}
+
+
+
+
 
