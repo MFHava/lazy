@@ -83,9 +83,6 @@ namespace lazy {
 			operator std::coroutine_handle<>() const noexcept { return handle; }
 		};
 
-		//! @brief internal accessor to handle
-		auto get_handle(auto & val) noexcept -> decltype(auto) { return (val.handle); }
-
 		template<std::size_t Tag>
 		struct tag_t final {
 			constexpr
@@ -208,37 +205,37 @@ namespace lazy {
 				};
 				return awaiter{{}, get_root()};
 			}
-		protected:
-			template<typename Other, bool Timed>
+		private:
+			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
 				nested_info n;
-				Other other;
+				unique_handle<T> other;
 				//! @note only acecssed when @code{.cpp} Timed == true @endcode
 				duration elapsed;
 			public:
-				push_awaiter(Other other) /*TODO: [C++26] pre(get_handle(other) and not get_handle(other).done())*/ : other{std::move(other)} {}
+				push_awaiter(unique_handle<T> other) /*TODO: [C++26] pre(other and not other.done())*/ : other{std::move(other)} {}
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					get_handle(other).promise().set_nested(n);
+					other.promise().set_nested(n);
 					n.parent = self;
 					auto nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto rd{reinterpret_cast<root_data *>(n.root->data)};
-					rd->top = get_handle(other);
+					rd->top = other;
 					if constexpr(Timed) elapsed = rd->timer.elapsed();
 					if(rd->suspend()) return std::noop_coroutine();
 					else return rd->top;
 				}
 
-				auto await_resume() /*TODO: [C++26] pre(get_handle(other).done())*/ {
+				auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 					if constexpr(Timed) {
 						auto rd{reinterpret_cast<root_data *>(n.root->data)};
 						elapsed = rd->timer.elapsed() - elapsed;
 					}
 
-					auto & promise{internal::get_handle(other).promise()};
+					auto & promise{other.promise()};
 					if constexpr(requires { promise.get_result(); }) { //! @note task
 						using Result = decltype(promise.get_result());
 						if constexpr(std::is_void_v<Result>) {
@@ -254,13 +251,25 @@ namespace lazy {
 					}
 				}
 			};
-		public:
-			template<typename T>
+
+			template<bool Timed, typename T>
 			static
-			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push_awaiter<task<T>, false>{std::move(other)}; }
+			auto push(unique_handle<T> handle) /*TODO: [C++26] pre(handle and not handle.done())*/ { return push_awaiter<T, Timed>{std::move(handle)}; }
+		public:
+			template<typename Self, typename T>
+			requires std::same_as<Self, typename generator<T>::promise_type>
+			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
+				other.g.handle.promise().yield_target = self.yield_target;
+				return push<false>(std::move(other.g.handle));
+			}
 
 			template<typename T>
-			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push_awaiter<task<T>, true>{std::move(other.task)}; }
+			static
+			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push<false>(std::move(other.handle)); }
+
+			template<typename T>
+			static
+			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push<true>(std::move(other.task.handle)); }
 
 			static
 			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
@@ -436,9 +445,6 @@ namespace lazy {
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
 	private:
-		friend
-		auto internal::get_handle(auto &) noexcept -> decltype(auto);
-
 		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
 		internal::unique_handle<promise_type> handle;
@@ -459,7 +465,7 @@ namespace lazy {
 		auto valueless() const noexcept -> bool { return not handle; }
 	private:
 		friend
-		auto internal::get_handle(auto &) noexcept -> decltype(auto);
+		internal::promise_base;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -505,11 +511,6 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<promise_type> self) const noexcept { return self.promise().yield_target; }
 				};
 				return awaiter{};
-			}
-
-			auto yield_value(elements_of<Result> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
-				other.g.handle.promise().yield_target = yield_target;
-				return internal::promise_base::push_awaiter<generator, false>{std::move(other.g)};
 			}
 
 			static
@@ -601,7 +602,7 @@ namespace lazy {
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 	private:
 		friend
-		auto internal::get_handle(auto &) noexcept -> decltype(auto);
+		internal::promise_base;
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
