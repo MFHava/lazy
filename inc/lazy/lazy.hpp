@@ -486,20 +486,25 @@ namespace lazy {
 			using internal::promise_base::yield_value;
 
 			auto yield_value(const Result & lval) requires std::is_copy_constructible_v<Result> /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
-				struct awaiter final : yield_awaiter {
+				struct awaiter final : std::suspend_always {
 					Result val;
 
+					//! @note does not check for suspension, as we need to jump back to @c yield_target
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept {
 						self.promise().ptr = std::addressof(val);
-						return yield_awaiter::await_suspend(self);
+						return self.promise().yield_target;
 					}
 				};
 				return awaiter{{}, lval};
 			}
 
-			auto yield_value(Result && val) /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
+			auto yield_value(Result && val) noexcept /*TODO: [C++26] pre(yield_target and not yield_target.done())*/ {
 				ptr = std::addressof(val);
-				return yield_awaiter{};
+				struct awaiter final : std::suspend_always {
+					//! @note does not check for suspension, as we need to jump back to @c yield_target
+					auto await_suspend(std::coroutine_handle<promise_type> self) const noexcept { return self.promise().yield_target; }
+				};
+				return awaiter{};
 			}
 
 			auto yield_value(elements_of<Result> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
@@ -509,12 +514,6 @@ namespace lazy {
 
 			static
 			void return_void() noexcept {}
-		private:
-			struct yield_awaiter : std::suspend_always {
-				//! @note does not check for suspension, as we need to jump back to @c yield_target
-				template<typename Promise>
-				auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().yield_target; }
-			};
 		};
 	private:
 		//! @brief lazy iterator for elements yielded by a coroutine
