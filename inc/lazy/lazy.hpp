@@ -159,6 +159,8 @@ namespace lazy {
 			auto get_nested() const -> nested_info * { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
 			void set_nested(nested_info & nested) /*TODO: [C++26] post(data & 1U)*/ { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
 
+			//TODO: [C++26] generate get_return_object() with deducing this and reflection
+
 			static
 			auto initial_suspend() noexcept { return std::suspend_always{}; }
 		private:
