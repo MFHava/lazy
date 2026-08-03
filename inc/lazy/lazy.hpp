@@ -165,11 +165,12 @@ namespace lazy {
 			log_level level;
 			std::string_view fmt;
 			decltype(std::make_format_args(std::declval<Args>()...)) args;
+			std::source_location loc;
 		public:
-			log_message(log_level level, std::format_string<Args...> fmt, Args &&... args) noexcept : level{level}, fmt{fmt.get()}, args{std::make_format_args(args...)} {}
+			log_message(log_level level, std::format_string<Args...> fmt, Args &&... args, std::source_location loc) noexcept : level{level}, fmt{fmt.get()}, args{std::make_format_args(args...)}, loc{loc} {}
 
 			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self, std::source_location loc = std::source_location::current()) -> bool {
+			auto await_suspend(std::coroutine_handle<Promise> self) -> bool {
 				auto & rd{self.promise().get_root()};
 				if(rd.logging.level >= level) rd.logging.messages.emplace_back(loc, level, std::vformat(fmt, args));
 				return rd.suspend();
@@ -442,35 +443,35 @@ namespace lazy {
 	//TODO: documentation
 	template<typename... Args>
 	struct [[nodiscard("must be awaited to take effect")]] error final : internal::log_message<Args...> {
-		error(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::error, fmt, std::forward<Args>(args)...} {}
+		error(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::error, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	error(std::format_string<Args...>, Args &&...) -> error<Args...>;
 	//TODO: documentation
 	template<typename... Args>
 	struct [[nodiscard("must be awaited to take effect")]] warning final : internal::log_message<Args...> {
-		warning(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::warning, fmt, std::forward<Args>(args)...} {}
+		warning(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::warning, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	warning(std::format_string<Args...>, Args &&...) -> warning<Args...>;
 	//TODO: documentation
 	template<typename... Args>
 	struct [[nodiscard("must be awaited to take effect")]] info final : internal::log_message<Args...> {
-		info(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::info, fmt, std::forward<Args>(args)...} {}
+		info(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::info, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	info(std::format_string<Args...>, Args &&...) -> info<Args...>;
 	//TODO: documentation
 	template<typename... Args>
 	struct [[nodiscard("must be awaited to take effect")]] debug final : internal::log_message<Args...> {
-		debug(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::debug, fmt, std::forward<Args>(args)...} {}
+		debug(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::debug, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	debug(std::format_string<Args...>, Args &&...) -> debug<Args...>;
 	//TODO: documentation
 	template<typename... Args>
 	struct [[nodiscard("must be awaited to take effect")]] trace final : internal::log_message<Args...> {
-		trace(std::format_string<Args...> fmt, Args &&... args) noexcept : internal::log_message<Args...>{log_level::trace, fmt, std::forward<Args>(args)...} {}
+		trace(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::trace, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	trace(std::format_string<Args...>, Args &&...) -> trace<Args...>;
