@@ -161,7 +161,7 @@ namespace lazy {
 		};
 
 		template<typename... Args>
-		class log_message : public std::suspend_always {
+		class log_message : public std::suspend_always, public awaiter_base {
 			log_level level;
 			std::string_view fmt;
 			decltype(std::make_format_args(std::declval<Args>()...)) args;
@@ -256,9 +256,6 @@ namespace lazy {
 				};
 				return awaiter{{}, get_root()};
 			}
-
-			template<typename... Args>
-			auto await_transform(log_message<Args...> log) { return log; }
 		protected:
 			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
