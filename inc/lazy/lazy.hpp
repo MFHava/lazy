@@ -248,15 +248,9 @@ namespace lazy {
 				return awaiter{{}, get_root()};
 			}
 
-			auto yield_value(progress_t) const noexcept {
-				struct awaiter final : std::suspend_always {
-					const root_data & rd;
-
-					auto await_ready() const noexcept { return not rd.suspend(); }
-				};
-				return awaiter{{}, get_root()};
-			}
-		protected:
+			static
+			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
+		private:
 			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
 				nested_info n;
@@ -307,13 +301,6 @@ namespace lazy {
 			static
 			auto push(unique_handle<T> handle) /*TODO: [C++26] pre(handle and not handle.done())*/ { return push_awaiter<T, Timed>{std::move(handle)}; }
 		public:
-			template<typename Self, typename T>
-			requires std::same_as<Self, typename generator<T>::promise_type>
-			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
-				other.g.handle.promise().yield_target = self.yield_target;
-				return push<false>(std::move(other.g.handle));
-			}
-
 			template<typename T>
 			static
 			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push<false>(std::move(other.handle)); }
@@ -322,8 +309,21 @@ namespace lazy {
 			static
 			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push<true>(std::move(other.task.handle)); }
 
-			static
-			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
+			template<typename Self, typename T>
+			requires std::same_as<Self, typename generator<T>::promise_type>
+			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
+				other.g.handle.promise().yield_target = self.yield_target;
+				return push<false>(std::move(other.g.handle));
+			}
+
+			auto yield_value(progress_t) const noexcept {
+				struct awaiter final : std::suspend_always {
+					const root_data & rd;
+
+					auto await_ready() const noexcept { return not rd.suspend(); }
+				};
+				return awaiter{{}, get_root()};
+			}
 		private:
 			//memory layout:
 			//     [ coroutine frame ] [ deleter ]   [ offset ] [ padding  ] [ allocator ]
