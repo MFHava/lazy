@@ -304,5 +304,82 @@ TEST_CASE("generator move-only", "[generator]") {
 
 
 
+TEST_CASE("root_generator", "[root_generator]") {
+	using namespace std::chrono_literals;
+
+	auto g = [] -> lazy::root_generator<int> {
+		co_yield 1;
+		co_yield 2;
+		std::this_thread::sleep_for(10ms);
+		co_yield lazy::progress;
+		co_yield 3;
+		co_yield lazy::elements_of{[] -> lazy::generator<int> {
+			co_yield 4;
+			co_yield 5;
+			std::this_thread::sleep_for(10ms);
+			co_yield lazy::progress;
+			co_yield lazy::elements_of{[] -> lazy::generator<int> {
+				co_return;
+			}()};
+			co_yield 6;
+			co_yield lazy::elements_of{[] -> lazy::generator<int> {
+				auto inner = [] -> lazy::generator<int> {
+					co_yield 100;
+					co_yield 7;
+				}();
+				auto it = co_await inner.begin();
+				co_await ++it;
+				co_yield *it;
+			}()};
+			co_yield 8;
+		}()};
+		co_yield 9;
+	}();
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 1);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 2);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(not g.has_result());
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 3);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 4);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 5);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(not g.has_result());
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 6);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 7);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 8);
+
+	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(g.has_result());
+	REQUIRE(g.result() == 9);
+
+	REQUIRE(g.wait() == lazy::state::done);
+	REQUIRE(g.done());
+}
 
 
