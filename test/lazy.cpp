@@ -163,6 +163,7 @@ TEST_CASE("mutex", "[lazy]") {
 }
 
 //TODO: more complex logging test case
+//TODO: dumping test case
 TEST_CASE("logging", "[lazy]") {
 	auto t = [](auto) -> lazy::root_task<> {
 		int val{1234};

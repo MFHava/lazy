@@ -25,7 +25,8 @@
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
-//!  * @code{.cpp} co_await [fatal|error|warning|info|debug|trace]{fmt-string|args...}; @endcode create log of the respective severity
+//!  * @code{.cpp} co_await [fatal|error|warning|info|debug|trace]{fmt-string, args...}; @endcode create log of the respective severity
+//!  * @code{.cpp} co_wait <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if tracing
 //!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
 //!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
@@ -59,10 +60,18 @@ namespace lazy {
 		trace,
 	};
 
+	//TODO: documentation
 	struct log_message final {
 		std::source_location location;
 		log_level level;
 		std::string description;
+	};
+
+	//TODO: documentation
+	struct log_dump final {
+		std::source_location location;
+		std::string name;
+		std::vector<std::byte> data;
 	};
 
 	//! @brief tag to time wall clock of execution of a @c task
@@ -114,7 +123,7 @@ namespace lazy {
 		using get_identity_t = tag_t<1>;
 		using set_blocked_t = tag_t<2>;
 
-		struct awaiter_base {};
+		struct awaiter_base : std::suspend_always {};
 
 		struct root_data final {
 			std::coroutine_handle<> top;
@@ -157,11 +166,12 @@ namespace lazy {
 			struct {
 				const log_level level;
 				std::vector<log_message> messages; //TODO: allocators?
+				std::vector<log_dump> dumps; //TODO: allocators?
 			} logging;
 		};
 
 		template<typename... Args>
-		class log_message : public std::suspend_always, public awaiter_base {
+		class log_message : public awaiter_base {
 			log_level level;
 			std::string_view fmt;
 			decltype(std::make_format_args(std::declval<Args>()...)) args;
@@ -473,6 +483,24 @@ namespace lazy {
 	template<typename... Args>
 	trace(std::format_string<Args...>, Args &&...) -> trace<Args...>;
 
+	//TODO: documentation
+	class dump_base : public internal::awaiter_base {
+		//TODO: documentation
+		virtual
+		auto do_dump() const -> std::vector<std::byte> =0;
+
+		std::string_view name;
+		std::source_location loc;
+	public:
+		dump_base(std::string_view name, std::source_location loc) noexcept : name{name}, loc{loc} {}
+
+		template<typename Promise>
+		auto await_suspend(std::coroutine_handle<Promise> self) const {
+			auto & rd{self.promise().get_root()};
+			if(rd.level == log_level::trace) rd.logging.dumps.emplace_back(loc, std::string{name}, do_dump());
+			return rd.suspend();
+		}
+	};
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
@@ -539,6 +567,7 @@ namespace lazy {
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
 
 		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
+		auto dumps() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.dumps; }
 	private:
 		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -640,7 +669,7 @@ namespace lazy {
 		};
 
 		template<bool Initial>
-		class iterator_awaiter final : public std::suspend_always, public internal::awaiter_base {
+		class iterator_awaiter final : public internal::awaiter_base {
 			using value_type = std::conditional_t<Initial, iterator, iterator &>;
 
 			value_type it;
