@@ -26,11 +26,11 @@
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
 //!  * @code{.cpp} co_await [error|warning|info|debug]{fmt-string, args...}; @endcode create log of the respective severity
-//!  * @code{.cpp} co_wait <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if tracing
+//!  * @code{.cpp} co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if tracing
 //!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
+//!  * @code{.cpp} co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
 //!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
-//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 namespace lazy {
 	using clock = std::chrono::steady_clock;
 	using duration = clock::duration;
@@ -504,6 +504,8 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine root task
 	//! @tparam Result return type of the task
+	//! additional supported coroutine statements:
+	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] root_task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -575,6 +577,8 @@ namespace lazy {
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
+	//! additional supported coroutine statements:
+	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -600,6 +604,7 @@ namespace lazy {
 	//! additional supported coroutine statements:
 	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
 	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
+	//!  * @code{.cpp} co_return; @endcode to terminate the generator
 	template<typename Result>
 	struct [[nodiscard]] generator final {
 		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
