@@ -178,6 +178,20 @@ TEST_CASE("logging", "[lazy]") {
 	std::println("Log: {}", t.log() | std::views::filter([](const auto & msg) { return msg.level < lazy::log_level::trace; }) |  std::views::transform([](const auto & msg) { return msg.data; }));
 }
 
+TEST_CASE("is_tracing", "[lazy]") {
+	auto t = [](auto) -> lazy::root_task<> {
+		REQUIRE(co_await lazy::get_is_tracing);
+	}(lazy::log_level::trace);
+	t.wait();
+	REQUIRE(t.done());
+
+	t = [](auto) -> lazy::root_task<> {
+		REQUIRE(not co_await lazy::get_is_tracing);
+	}(lazy::log_level::fatal);
+	t.wait();
+	REQUIRE(t.done());
+}
+
 //TODO: timed waiting, etc.
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 

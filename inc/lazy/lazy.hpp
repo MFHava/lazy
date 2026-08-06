@@ -116,6 +116,7 @@ namespace lazy {
 		using progress_t = tag_t<0>;
 		using get_identity_t = tag_t<1>;
 		using set_blocked_t = tag_t<2>;
+		using get_is_tracing_t = tag_t<3>;
 
 		struct awaiter_base : std::suspend_always {};
 
@@ -241,12 +242,14 @@ namespace lazy {
 				return std::suspend_always{};
 			}
 
-			auto await_transform(get_identity_t) const noexcept {
+			template<either<get_identity_t, get_is_tracing_t> T>
+			auto await_transform(T) const noexcept {
 				struct awaiter final : std::suspend_always {
 					const root_data & rd;
 
 					auto await_ready() const noexcept { return not rd.suspend(); }
-					auto await_resume() const noexcept -> const void * { return std::addressof(rd); }
+					auto await_resume() const noexcept -> const void * requires std::same_as<T, get_identity_t> { return std::addressof(rd); }
+					auto await_resume() const noexcept -> bool requires std::same_as<T, get_is_tracing_t> { return rd.logging.level == log_level::trace; }
 				};
 				return awaiter{{}, get_root()};
 			}
@@ -431,6 +434,12 @@ namespace lazy {
 	inline
 	constexpr
 	internal::get_identity_t get_identity{1};
+
+
+	//! @brief tag to request whether the active @c log_level is @c trace
+	inline
+	constexpr
+	internal::get_is_tracing_t get_is_tracing{1};
 
 
 	//! @brief tag to yield progress within a @c task
