@@ -175,7 +175,7 @@ TEST_CASE("logging", "[lazy]") {
 
 	REQUIRE_THROWS(t.wait());
 	//REQUIRE(t.log().size() == 3);
-	std::println("Log: {}", t.log() | std::views::transform([](const auto & msg) { return msg.description; }));
+	std::println("Log: {}", t.log() | std::views::filter([](const auto & msg) { return msg.level < lazy::log_level::trace; }) |  std::views::transform([](const auto & msg) { return msg.data; }));
 }
 
 //TODO: timed waiting, etc.
