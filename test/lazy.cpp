@@ -307,7 +307,7 @@ TEST_CASE("generator move-only", "[generator]") {
 TEST_CASE("root_generator", "[root_generator]") {
 	using namespace std::chrono_literals;
 
-	auto g = [] -> lazy::root_generator<int> {
+	lazy::root_generator g{[] -> lazy::generator<int> {
 		co_yield 1;
 		co_yield 2;
 		std::this_thread::sleep_for(10ms);
@@ -334,7 +334,7 @@ TEST_CASE("root_generator", "[root_generator]") {
 			co_yield 8;
 		}()};
 		co_yield 9;
-	}();
+	}()};
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
 	REQUIRE(g.has_result());

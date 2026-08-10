@@ -349,13 +349,6 @@ namespace lazy {
 				return push<false>(std::move(other.g.handle));
 			}
 
-			template<typename Self, typename T>
-			requires std::same_as<Self, typename root_generator<T>::promise_type>
-			auto yield_value(this Self &, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
-				other.g.handle.promise().yield_target.set_update_suspension_state();
-				return push<false>(std::move(other.g.handle));
-			}
-
 			auto yield_value(progress_t) const noexcept {
 				struct awaiter final : std::suspend_always {
 					const root_data & rd;
@@ -712,6 +705,8 @@ namespace lazy {
 	private:
 		friend
 		internal::promise_base;
+		friend
+		root_generator<Result>;
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -820,49 +815,35 @@ namespace lazy {
 	};
 
 	//TODO: better name as it doesn't really model a generator ... maybe multi_task...
-	//! @brief cooperative synchronous(!) recursive coroutine root generator
+	//! @brief root of coroutine stack
 	//! @tparam Result return type of the generator
-	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
-	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
-	//!  * @code{.cpp} co_return; @endcode to terminate the generator
 	template<typename Result>
-	struct [[nodiscard]] root_generator final {
-		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
+	class [[nodiscard]] root_generator final {
+		internal::root_data root;
+		internal::unique_handle<typename generator<Result>::promise_type> handle;
+	public:
+		//TODO: [[deprecated]]
+		root_generator(generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root_generator{log_level::trace, std::move(generator)} {}
 
-		struct promise_type final : internal::promise_base {
-			internal::root_data root;
+		root_generator(log_level level, generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root{.logging{.level = level}}, handle{std::move(generator.handle)} {
+			root.top = handle;
+			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+			handle.promise().yield_target.set_update_suspension_state();
+		}
 
-			promise_type() noexcept : promise_type{log_level::trace} {} //TODO: remove this ctor?
+		root_generator(root_generator && other) noexcept : root{std::exchange(other.root, {})}, handle{std::exchange(other.handle, {})} {
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		}
 
-			promise_type(log_level level, auto &&... /*args*/) noexcept : root{.top = std::coroutine_handle<promise_type>::from_promise(*this), .logging{.level = level}} { //free function with no allocator
-				this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
-			}
-			promise_type(auto & /*this*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with no allocator
-			promise_type(std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //free function with allocator
-			promise_type(auto & /*this*/, std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with allocator
+		auto operator=(root_generator && other) noexcept -> root_generator & {
+			std::swap(root, other.root);
+			std::swap(handle, other.handle);
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.root));
+			return *this;
+		}
 
-			auto get_return_object() noexcept { return root_generator{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-
-			using internal::promise_base::yield_value;
-
-			auto yield_value(const Result & lval) requires std::is_copy_constructible_v<Result> {
-				struct awaiter final : std::suspend_always {
-					Result val;
-
-					void await_suspend(std::coroutine_handle<promise_type> self) noexcept { self.promise().get_root().suspension_state.set_yield_result(std::addressof(val)); }
-				};
-				return awaiter{{}, lval};
-			}
-
-			auto yield_value(Result && val) noexcept {
-				root.suspension_state.set_yield_result(std::addressof(val));
-				return std::suspend_always{};
-			}
-
-			static
-			void return_void() noexcept {}
-		};
+		~root_generator() noexcept =default;
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
@@ -885,8 +866,6 @@ namespace lazy {
 		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return state::done;
-			auto & promise{handle.promise()};
-			auto & root{promise.root};
 			root.suspend.ctx = std::addressof(func);
 			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
 			root.suspension_state.reset();
@@ -894,24 +873,19 @@ namespace lazy {
 			{
 				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{root}; //defer...
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				promise.root.top.resume();
+				root.top.resume();
 			}
 			if(done()) return state::done;
 			return root.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
 
-		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return handle.promise().root.suspension_state.has_yield_result(); }
+		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return root.suspension_state.has_yield_result(); }
 
-		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return static_cast<Result &&>(*reinterpret_cast<Result *>(handle.promise().root.suspension_state.yield_result())); }
+		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return static_cast<Result &&>(*reinterpret_cast<Result *>(root.suspension_state.yield_result())); }
 
-		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
+		auto elapsed() const noexcept -> duration { return root.timer.elapsed(); }
 
-		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
-		auto dumps() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.dumps; }
-	private:
-		root_generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-
-		internal::unique_handle<promise_type> handle;
+		auto log() const noexcept -> std::span<const log_message> { return root.logging.messages; }
 	};
 }
 
