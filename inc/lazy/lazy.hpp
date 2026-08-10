@@ -24,12 +24,12 @@
 
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-//!  * @code{.cpp} co_await task; @endcode block this task until the awaited @c task is completed, then yield its result if any
+//!  * @code{.cpp} co_await task; @endcode block current coroutine until the awaited @c task is completed, then returns its result if any
 //!  * @code{.cpp} co_await [error|warning|info|debug]{fmt-string, args...}; @endcode create log of the respective severity
-//!  * @code{.cpp} co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if tracing
+//!  * @code{.cpp} co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if coroutine stack is executing with @c log_level::trace
 //!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
 //!  * @code{.cpp} co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
-//!  * @code{.cpp} co_await timed{task}; @endcode block this task until the awaited @c task is completed, then yield the time it took to complete and its result if any
+//!  * @code{.cpp} co_await timed{task}; @endcode block this coroutine until the awaited @c task is completed, then returns the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 namespace lazy {
 	using clock = std::chrono::steady_clock;
@@ -124,13 +124,10 @@ namespace lazy {
 		};
 
 		//! @brief base for all awaiters that will be passed through @c await_transform transparently
-		struct awaiter_base : std::suspend_always {};
+		struct await_base : std::suspend_always {};
 
-		//! @note not derived from @c awaiter_base as this awaiter can only be used with @c co_yield
-		struct progress_t final : std::suspend_always {
-			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().get_root().suspend(); }
-		};
+		//! @brief base for all awaiters that will be passed through @c yield_value transparently
+		struct yield_base : std::suspend_always {};
 
 		struct root_data final {
 			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
@@ -309,7 +306,7 @@ namespace lazy {
 			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push<true>(std::move(other.task.handle)); }
 
 			static
-			auto await_transform(std::derived_from<awaiter_base> auto a) noexcept { return a; }
+			auto await_transform(std::derived_from<await_base> auto a) noexcept { return a; }
 
 			template<typename Self, typename T>
 			requires std::same_as<Self, typename generator<T>::promise_type>
@@ -319,7 +316,7 @@ namespace lazy {
 			}
 
 			static
-			auto yield_value(progress_t a) noexcept { return a; }
+			auto yield_value(std::derived_from<yield_base> auto a) noexcept { return a; }
 		private:
 			//memory layout:
 			//     [ coroutine frame ] [ deleter ]   [ offset ] [ padding  ] [ allocator ]
@@ -419,12 +416,17 @@ namespace lazy {
 			void get_result() const /*TODO: [C++26] pre(initialized)*/ {}
 		};
 
-		struct set_blocked_t final : awaiter_base {
+		struct progress_t final : yield_base {
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().get_root().suspend(); }
+		};
+
+		struct blocked_t final : yield_base { //TODO: add awaiter to public API?
 			template<typename Promise>
 			void await_suspend(std::coroutine_handle<Promise> self) const noexcept { self.promise().get_root().suspension_state.set_blocked(); }
 		};
 
-		class get_identity_t final : public awaiter_base {
+		class get_identity_t final : public await_base {
 			id result;
 		public:
 			template<typename Promise>
@@ -436,7 +438,7 @@ namespace lazy {
 			auto await_resume() const noexcept -> id { return result; }
 		};
 
-		class get_is_tracing_t final : public awaiter_base {
+		class get_is_tracing_t final : public await_base {
 			bool result{false};
 		public:
 			template<typename Promise>
@@ -449,7 +451,7 @@ namespace lazy {
 		};
 
 		template<typename... Args>
-		class log_message : public awaiter_base {
+		class log_message : public await_base {
 			log_level level;
 			std::string_view fmt;
 			decltype(std::make_format_args(std::declval<Args>()...)) args;
@@ -512,7 +514,7 @@ namespace lazy {
 	debug(std::format_string<Args...>, Args &&...) -> debug<Args...>;
 
 	//TODO: documentation
-	class dump_base : public internal::awaiter_base {
+	class dump_base : public internal::await_base {
 		//TODO: documentation
 		virtual
 		void dump_to(std::back_insert_iterator<std::string> result) const =0;
@@ -653,7 +655,7 @@ namespace lazy {
 		};
 
 		template<bool Initial>
-		class iterator_awaiter final : public internal::awaiter_base {
+		class iterator_awaiter final : public internal::await_base {
 			using value_type = std::conditional_t<Initial, iterator, iterator &>;
 
 			value_type it;
@@ -737,7 +739,7 @@ namespace lazy {
 
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
 				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
-				co_await internal::set_blocked_t{};
+				co_yield internal::blocked_t{};
 			}
 
 			const struct guard final { mutex & m; ~guard() noexcept { m.state.store({}); } } g{*this}; //defer...
@@ -788,7 +790,7 @@ namespace lazy {
 		}
 
 		template<typename Func>
-		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
+		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ {
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return state::done;
 			auto & rd{ptr->root};
@@ -825,6 +827,11 @@ namespace lazy {
 	template<typename Wrapper>
 	class root;
 
+	template<typename Wrapper>
+	root(Wrapper) -> root<Wrapper>;
+	template<typename Wrapper>
+	root(log_level, Wrapper) -> root<Wrapper>;
+
 	template<typename Result>
 	struct [[nodiscard]] root<task<Result>> final : root_base<task<Result>> {
 		using root_base<task<Result>>::root_base;
@@ -834,11 +841,6 @@ namespace lazy {
 		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return this->ptr->handle.promise().get_result(); }
 	};
 
-	template<typename T>
-	root(task<T>) -> root<task<T>>;
-	template<typename T>
-	root(log_level, task<T>) -> root<task<T>>;
-
 	template<typename Result>
 	struct [[nodiscard]] root<generator<Result>> final : root_base<generator<Result>> {
 		using root_base<generator<Result>>::root_base;
@@ -847,10 +849,5 @@ namespace lazy {
 
 		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return std::move(*reinterpret_cast<Result *>(this->ptr->root.suspension_state.yield_result())); }
 	};
-
-	template<typename T>
-	root(generator<T>) -> root<generator<T>>;
-	template<typename T>
-	root(log_level, generator<T>) -> root<generator<T>>;
 }
 
