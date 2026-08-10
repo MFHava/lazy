@@ -101,12 +101,6 @@ namespace lazy {
 	};
 
 	namespace internal {
-		template<typename T, typename... U>
-		concept either = (std::same_as<T, U> or ...);
-
-		template<typename T, typename... U>
-		concept neither = not either<T, U...>;
-
 		template<typename Promise>
 		class unique_handle final {
 			std::coroutine_handle<Promise> handle;
@@ -129,19 +123,14 @@ namespace lazy {
 			operator std::coroutine_handle<>() const noexcept { return handle; }
 		};
 
-		template<std::size_t Tag>
-		struct tag_t final {
-			constexpr
-			explicit
-			tag_t(int) noexcept {}
-		};
-
-		using progress_t = tag_t<0>;
-		using get_identity_t = tag_t<1>;
-		using set_blocked_t = tag_t<2>;
-		using get_is_tracing_t = tag_t<3>;
-
+		//! @brief base for all awaiters that will be passed through @c await_transform transparently
 		struct awaiter_base : std::suspend_always {};
+
+		//! @note not derived from @c awaiter_base as this awaiter can only be used with @c co_yield
+		struct progress_t final : std::suspend_always {
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().get_root().suspend(); }
+		};
 
 		struct root_data final {
 			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
@@ -205,23 +194,6 @@ namespace lazy {
 			} suspension_state;
 		};
 
-		template<typename... Args>
-		class log_message : public awaiter_base {
-			log_level level;
-			std::string_view fmt;
-			decltype(std::make_format_args(std::declval<Args>()...)) args;
-			std::source_location loc;
-		public:
-			log_message(log_level level, std::format_string<Args...> fmt, Args &&... args, std::source_location loc) noexcept : level{level}, fmt{fmt.get()}, args{std::make_format_args(args...)}, loc{loc} {}
-
-			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) -> bool {
-				auto & rd{self.promise().get_root()};
-				if(rd.logging.level >= level) rd.logging.messages.emplace_back(loc, level, std::vformat(fmt, args));
-				return rd.suspend();
-			}
-		};
-
 		struct promise_base;
 
 		struct nested_info final {
@@ -277,26 +249,6 @@ namespace lazy {
 					throw;
 				}
 			}
-
-			auto await_transform(set_blocked_t) noexcept {
-				get_root().suspension_state.set_blocked();
-				return std::suspend_always{};
-			}
-
-			template<either<get_identity_t, get_is_tracing_t> T>
-			auto await_transform(T) const noexcept {
-				struct awaiter final : std::suspend_always {
-					const root_data & rd;
-
-					auto await_ready() const noexcept { return not rd.suspend(); }
-					auto await_resume() const noexcept requires std::same_as<T, get_identity_t> { return rd.get_id(); }
-					auto await_resume() const noexcept requires std::same_as<T, get_is_tracing_t> { return rd.logging.level == log_level::trace; }
-				};
-				return awaiter{{}, get_root()};
-			}
-
-			static
-			auto await_transform(std::derived_from<awaiter_base> auto a) { return a; }
 		private:
 			template<typename T, bool Timed>
 			class push_awaiter final : public std::suspend_always {
@@ -356,21 +308,18 @@ namespace lazy {
 			static
 			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push<true>(std::move(other.task.handle)); }
 
+			static
+			auto await_transform(std::derived_from<awaiter_base> auto a) noexcept { return a; }
+
 			template<typename Self, typename T>
 			requires std::same_as<Self, typename generator<T>::promise_type>
-			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target) pre(yield_target and not yield_target.done())*/ {
+			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target)*/ {
 				other.g.handle.promise().yield_target = self.yield_target;
 				return push<false>(std::move(other.g.handle));
 			}
 
-			auto yield_value(progress_t) const noexcept {
-				struct awaiter final : std::suspend_always {
-					const root_data & rd;
-
-					auto await_ready() const noexcept { return not rd.suspend(); }
-				};
-				return awaiter{{}, get_root()};
-			}
+			static
+			auto yield_value(progress_t a) noexcept { return a; }
 		private:
 			//memory layout:
 			//     [ coroutine frame ] [ deleter ]   [ offset ] [ padding  ] [ allocator ]
@@ -469,25 +418,68 @@ namespace lazy {
 
 			void get_result() const /*TODO: [C++26] pre(initialized)*/ {}
 		};
+
+		struct set_blocked_t final : awaiter_base {
+			template<typename Promise>
+			void await_suspend(std::coroutine_handle<Promise> self) const noexcept { self.promise().get_root().suspension_state.set_blocked(); }
+		};
+
+		class get_identity_t final : public awaiter_base {
+			id result;
+		public:
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
+				const auto & rd{self.promise().get_root()};
+				result = rd.get_id();
+				return rd.suspend();
+			}
+			auto await_resume() const noexcept -> id { return result; }
+		};
+
+		class get_is_tracing_t final : public awaiter_base {
+			bool result{false};
+		public:
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
+				const auto & rd{self.promise().get_root()};
+				result = rd.logging.level == log_level::trace;
+				return rd.suspend();
+			}
+			auto await_resume() const noexcept -> bool { return result; }
+		};
+
+		template<typename... Args>
+		class log_message : public awaiter_base {
+			log_level level;
+			std::string_view fmt;
+			decltype(std::make_format_args(std::declval<Args>()...)) args;
+			std::source_location loc;
+		public:
+			log_message(log_level level, std::format_string<Args...> fmt, Args &&... args, std::source_location loc) noexcept : level{level}, fmt{fmt.get()}, args{std::make_format_args(args...)}, loc{loc} {}
+
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) const -> bool {
+				auto & rd{self.promise().get_root()};
+				if(rd.logging.level >= level) rd.logging.messages.emplace_back(loc, level, std::vformat(fmt, args));
+				return rd.suspend();
+			}
+		};
 	}
 
-	//! @brief tag to request identity of root of coroutine stack
+	//! @brief awaiter to request identity of root of coroutine stack
 	inline
 	constexpr
-	internal::get_identity_t get_identity{1};
+	internal::get_identity_t get_identity;
 
-
-	//! @brief tag to request whether the active @c log_level is @c trace
+	//! @brief awaiter to request whether the active @c log_level is @c trace
 	inline
 	constexpr
-	internal::get_is_tracing_t get_is_tracing{1};
+	internal::get_is_tracing_t get_is_tracing;
 
-
-	//! @brief tag to yield progress within a @c task
-	//! @note not supported in @c generator to avoid ambiguity problems
+	//! @brief awaiter to yield progress within a @c task or @c generator
 	inline
 	constexpr
-	internal::progress_t progress{1};
+	internal::progress_t progress;
 
 
 	//TODO: documentation
@@ -745,7 +737,7 @@ namespace lazy {
 
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
 				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
-				co_await internal::set_blocked_t{1};
+				co_await internal::set_blocked_t{};
 			}
 
 			const struct guard final { mutex & m; ~guard() noexcept { m.state.store({}); } } g{*this}; //defer...
