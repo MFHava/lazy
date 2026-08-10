@@ -44,10 +44,7 @@ namespace lazy {
 	struct task;
 
 	template<typename>
-	struct root_task;
-
-	template<typename>
-	struct root_generator;
+	class root;
 
 	enum class state {
 		done,      //!< execution completed, result is ready
@@ -139,11 +136,7 @@ namespace lazy {
 			class {
 				template<typename>
 				friend
-				struct lazy::root_task;
-
-				template<typename>
-				friend
-				struct lazy::root_generator;
+				struct lazy::root;
 
 				duration elapsed_{};
 				std::optional<clock::time_point> last_resume; //set => coroutine stack is running...
@@ -172,8 +165,8 @@ namespace lazy {
 			class {
 				//! @attention tagged "union"
 				//! LSB set => suspended due to being blocked
-				//! else: for root_task: UNUSED
-				//! else: for root_generator:
+				//! else: for root<task<?>>: UNUSED
+				//! else: for root<generator<?>>:
 				//!   if equal to 0 => suspended without value
 				//!   else => pointer to last yield-result
 				std::uintptr_t data;
@@ -548,7 +541,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root_task<Result>;
+		root<task>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -706,7 +699,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root_generator<Result>;
+		root<generator>;
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -742,34 +735,37 @@ namespace lazy {
 		}
 	};
 
+	template<typename>
+	class root;
+
 	//! @brief root of coroutine stack
 	//! @tparam Result return type of the task
-	template<typename Result = void>
-	class [[nodiscard]] root_task final {
-		internal::root_data root;
+	template<typename Result>
+	class [[nodiscard]] root<task<Result>> final {
+		internal::root_data rd;
 		internal::unique_handle<typename task<Result>::promise_type> handle;
 	public:
 		//TODO: [[deprecated]]
-		root_task(task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root_task{log_level::trace, std::move(task)} {}
+		root(task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root{log_level::trace, std::move(task)} {}
 
-		root_task(log_level level, task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root{.logging{.level = level}}, handle{std::move(task.handle)} {
-			root.top = handle;
-			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		root(log_level level, task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : rd{.logging{.level = level}}, handle{std::move(task.handle)} {
+			rd.top = handle;
+			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
 		}
 
-		root_task(root_task && other) noexcept : root{std::exchange(other.root, {})}, handle{std::exchange(other.handle, {})} {
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		root(root && other) noexcept : rd{std::exchange(other.rd, {})}, handle{std::exchange(other.handle, {})} {
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
 		}
 
-		auto operator=(root_task && other) noexcept -> root_task & {
-			std::swap(root, other.root);
+		auto operator=(root && other) noexcept -> root & {
+			std::swap(rd, other.rd);
 			std::swap(handle, other.handle);
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
-			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.root));
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
+			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.rd));
 			return *this;
 		}
 
-		~root_task() noexcept =default;
+		~root() noexcept =default;
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
@@ -792,58 +788,62 @@ namespace lazy {
 		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return state::done;
-			root.suspend.ctx = std::addressof(func);
-			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-			root.suspension_state.reset();
-			root.timer.start();
+			rd.suspend.ctx = std::addressof(func);
+			rd.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+			rd.suspension_state.reset();
+			rd.timer.start();
 			{
-				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{root}; //defer...
+				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{rd}; //defer...
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				root.top.resume();
+				rd.top.resume();
 			}
 			if(done()) return state::done;
-			return root.suspension_state.blocked() ? state::blocked : state::suspended;
+			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
 
 		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return handle.promise().has_result(); }
 
 		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
 
-		auto elapsed() const noexcept -> duration { return root.timer.elapsed(); }
+		auto elapsed() const noexcept -> duration { return rd.timer.elapsed(); }
 
-		auto log() const noexcept -> std::span<const log_message> { return root.logging.messages; }
+		auto log() const noexcept -> std::span<const log_message> { return rd.logging.messages; }
 	};
 
-	//TODO: better name as it doesn't really model a generator ... maybe multi_task...
+	template<typename T>
+	root(task<T>) -> root<task<T>>;
+	template<typename T>
+	root(log_level, task<T>) -> root<task<T>>;
+
 	//! @brief root of coroutine stack
 	//! @tparam Result return type of the generator
 	template<typename Result>
-	class [[nodiscard]] root_generator final {
-		internal::root_data root;
+	class [[nodiscard]] root<generator<Result>> final {
+		internal::root_data rd;
 		internal::unique_handle<typename generator<Result>::promise_type> handle;
 	public:
 		//TODO: [[deprecated]]
-		root_generator(generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root_generator{log_level::trace, std::move(generator)} {}
+		root(generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root{log_level::trace, std::move(generator)} {}
 
-		root_generator(log_level level, generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root{.logging{.level = level}}, handle{std::move(generator.handle)} {
-			root.top = handle;
-			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		root(log_level level, generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : rd{.logging{.level = level}}, handle{std::move(generator.handle)} {
+			rd.top = handle;
+			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
 			handle.promise().yield_target.set_update_suspension_state();
 		}
 
-		root_generator(root_generator && other) noexcept : root{std::exchange(other.root, {})}, handle{std::exchange(other.handle, {})} {
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		root(root && other) noexcept : rd{std::exchange(other.rd, {})}, handle{std::exchange(other.handle, {})} {
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
 		}
 
-		auto operator=(root_generator && other) noexcept -> root_generator & {
-			std::swap(root, other.root);
+		auto operator=(root && other) noexcept -> root & {
+			std::swap(rd, other.rd);
 			std::swap(handle, other.handle);
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
-			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.root));
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
+			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.rd));
 			return *this;
 		}
 
-		~root_generator() noexcept =default;
+		~root() noexcept =default;
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
@@ -866,26 +866,31 @@ namespace lazy {
 		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
 			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
 			if(done()) return state::done;
-			root.suspend.ctx = std::addressof(func);
-			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-			root.suspension_state.reset();
-			root.timer.start();
+			rd.suspend.ctx = std::addressof(func);
+			rd.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+			rd.suspension_state.reset();
+			rd.timer.start();
 			{
-				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{root}; //defer...
+				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{rd}; //defer...
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				root.top.resume();
+				rd.top.resume();
 			}
 			if(done()) return state::done;
-			return root.suspension_state.blocked() ? state::blocked : state::suspended;
+			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
 
-		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return root.suspension_state.has_yield_result(); }
+		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return rd.suspension_state.has_yield_result(); }
 
-		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return static_cast<Result &&>(*reinterpret_cast<Result *>(root.suspension_state.yield_result())); }
+		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return static_cast<Result &&>(*reinterpret_cast<Result *>(rd.suspension_state.yield_result())); }
 
-		auto elapsed() const noexcept -> duration { return root.timer.elapsed(); }
+		auto elapsed() const noexcept -> duration { return rd.timer.elapsed(); }
 
-		auto log() const noexcept -> std::span<const log_message> { return root.logging.messages; }
+		auto log() const noexcept -> std::span<const log_message> { return rd.logging.messages; }
 	};
+
+	template<typename T>
+	root(generator<T>) -> root<generator<T>>;
+	template<typename T>
+	root(log_level, generator<T>) -> root<generator<T>>;
 }
 

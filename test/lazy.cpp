@@ -15,7 +15,7 @@
 #include <lazy/lazy.hpp>
 
 TEST_CASE("trivial", "[lazy]") {
-	lazy::root_task t{[] -> lazy::task<int> { co_return 1; }()};
+	lazy::root t{[] -> lazy::task<int> { co_return 1; }()};
 	REQUIRE(not t.valueless());
 
 	REQUIRE(t.wait() == lazy::state::done);
@@ -27,7 +27,7 @@ TEST_CASE("trivial", "[lazy]") {
 }
 
 TEST_CASE("throwing_not_makes_valueless", "[lazy]") {
-	lazy::root_task t{[] -> lazy::task<void> {
+	lazy::root t{[] -> lazy::task<void> {
 		throw 0;
 		co_return;
 	}()};
@@ -77,7 +77,7 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 	std::pmr::monotonic_buffer_resource mbr{buffer.data(), buffer.size()};
 	std::pmr::polymorphic_allocator<int> pa{&mbr};
 
-	lazy::root_task t{[](std::allocator_arg_t, auto...) -> lazy::task<int> {
+	lazy::root t{[](std::allocator_arg_t, auto...) -> lazy::task<int> {
 		co_return 1;
 	}(std::allocator_arg, pa)};
 
@@ -87,7 +87,7 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 }
 
 TEST_CASE("nesting", "[lazy]") {
-	lazy::root_task t{[] -> lazy::task<double> {
+	lazy::root t{[] -> lazy::task<double> {
 		auto v0 = co_await [] -> lazy::task<int> { co_return 10; }();
 		REQUIRE(v0 == 10);
 
@@ -108,7 +108,7 @@ TEST_CASE("nesting", "[lazy]") {
 TEST_CASE("time", "[lazy]") {
 	using namespace std::chrono_literals;
 
-	lazy::root_task t{[] -> lazy::task<> {
+	lazy::root t{[] -> lazy::task<> {
 		co_await [] -> lazy::task<> {
 			std::this_thread::sleep_for(1ms);
 			co_return;
@@ -130,7 +130,7 @@ TEST_CASE("mutex", "[lazy]") {
 	using namespace std::chrono_literals;
 	static lazy::mutex m;
 
-	lazy::root_task t0{[] -> lazy::task<int> {
+	lazy::root t0{[] -> lazy::task<int> {
 		co_return co_await m.locked([] -> lazy::task<int> {
 			std::println("t0 locked m");
 			std::this_thread::sleep_for(10ms);
@@ -140,7 +140,7 @@ TEST_CASE("mutex", "[lazy]") {
 		}());
 	}()};
 
-	lazy::root_task t1{[] -> lazy::task<> {
+	lazy::root t1{[] -> lazy::task<> {
 		co_await m.locked([] -> lazy::task<> {
 			std::println("t1 locked m");
 			co_yield lazy::progress;
@@ -165,7 +165,7 @@ TEST_CASE("mutex", "[lazy]") {
 //TODO: more complex logging test case
 //TODO: dumping test case
 TEST_CASE("logging", "[lazy]") {
-	lazy::root_task t{lazy::log_level::info, [] -> lazy::task<> {
+	lazy::root t{lazy::log_level::info, [] -> lazy::task<> {
 		int val{1234};
 		co_await lazy::warning{"This is visible - {}", val};
 		co_await lazy::debug{"This is invisible"};
@@ -179,7 +179,7 @@ TEST_CASE("logging", "[lazy]") {
 }
 
 TEST_CASE("is_tracing", "[lazy]") {
-	lazy::root_task t{lazy::log_level::trace, [] -> lazy::task<> {
+	lazy::root t{lazy::log_level::trace, [] -> lazy::task<> {
 		REQUIRE(co_await lazy::get_is_tracing);
 	}()};
 	t.wait();
@@ -233,7 +233,7 @@ auto fibonacci() -> lazy::generator<int> {
 }
 
 TEST_CASE("generator fib", "[generator]") {
-	lazy::root_task t{[] -> lazy::task<void> {
+	lazy::root t{[] -> lazy::task<void> {
 		auto gen{fibonacci()};
 		for(auto beg = co_await gen.begin(); beg != gen.end(); co_await ++beg) {
 			auto && i{*beg};
@@ -264,7 +264,7 @@ TEST_CASE("generator fib", "[generator]") {
 }
 
 TEST_CASE("generator elements_of", "[generator]") {
-	lazy::root_task t{[] -> lazy::task<void> {
+	lazy::root t{[] -> lazy::task<void> {
 		auto outer{[] -> lazy::generator<std::string_view> {
 			co_yield "before";
 			auto inner{[] -> lazy::generator<std::string_view> {
@@ -290,7 +290,7 @@ TEST_CASE("generator move-only", "[generator]") {
 		~move_only() noexcept {}
 	};
 
-	lazy::root_task t{[] -> lazy::task<void> {
+	lazy::root t{[] -> lazy::task<void> {
 		auto g{[] -> lazy::generator<move_only> {
 			co_yield move_only{};
 			move_only mo;
@@ -307,7 +307,7 @@ TEST_CASE("generator move-only", "[generator]") {
 TEST_CASE("root_generator", "[root_generator]") {
 	using namespace std::chrono_literals;
 
-	lazy::root_generator g{[] -> lazy::generator<int> {
+	lazy::root g{[] -> lazy::generator<int> {
 		co_yield 1;
 		co_yield 2;
 		std::this_thread::sleep_for(10ms);
