@@ -19,7 +19,6 @@
 #include <system_error>
 #include <source_location>
 
-//TODO: introduce id-type instead of using const void *?
 //TODO: solution for supporting fork-join pattern?
 //TODO: TLS replacement?
 
@@ -79,6 +78,25 @@ namespace lazy {
 	struct elements_of final { generator<T> g; };
 
 	namespace internal {
+		struct root_data;
+	}
+
+	class id final {
+		std::uintptr_t val{0};
+
+		explicit
+		id(std::uintptr_t val) noexcept : val{val} {}
+
+		friend
+		internal::root_data;
+	public:
+		id() noexcept =default;
+
+		friend
+		auto operator<=>(id, id) noexcept =default;
+	};
+
+	namespace internal {
 		template<typename T, typename... U>
 		concept either = (std::same_as<T, U> or ...);
 
@@ -122,6 +140,8 @@ namespace lazy {
 		struct awaiter_base : std::suspend_always {};
 
 		struct root_data final {
+			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
+
 			std::coroutine_handle<> top;
 
 			//! @note inlined @code{.cpp} function_ref<bool() const noexcept> @endcode
@@ -263,8 +283,8 @@ namespace lazy {
 					const root_data & rd;
 
 					auto await_ready() const noexcept { return not rd.suspend(); }
-					auto await_resume() const noexcept -> const void * requires std::same_as<T, get_identity_t> { return std::addressof(rd); }
-					auto await_resume() const noexcept -> bool requires std::same_as<T, get_is_tracing_t> { return rd.logging.level == log_level::trace; }
+					auto await_resume() const noexcept requires std::same_as<T, get_identity_t> { return rd.get_id(); }
+					auto await_resume() const noexcept requires std::same_as<T, get_is_tracing_t> { return rd.logging.level == log_level::trace; }
 				};
 				return awaiter{{}, get_root()};
 			}
@@ -703,28 +723,26 @@ namespace lazy {
 
 	//! @brief synchronization primitive
 	class mutex final {
-		std::atomic<const void *> state{nullptr};
+		using atomic_t = std::atomic<id>;
+		static_assert(atomic_t::is_always_lock_free);
+		atomic_t state;
 	public:
 		mutex() noexcept =default;
 		mutex(const mutex &) =delete;
 		auto operator=(const mutex &) -> mutex & =delete;
-		~mutex() noexcept { if(state) std::terminate(); } //tried to destroy locked mutex
+		~mutex() noexcept { if(state != id{}) std::terminate(); } //tried to destroy locked mutex
 
 		//! @brief execute @c t whilst @c *this is locked
 		template<typename T>
 		auto locked(task<T> t) -> task<T> /*TODO: [C++26] pre(not t.valueless())*/ {
-			const auto id{co_await get_identity};
+			const auto self{co_await get_identity};
 
-			for(const void * ptr{nullptr}; not state.compare_exchange_strong(ptr, id); ptr = nullptr) {
-				if(ptr == id) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
+			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
+				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
 				co_await internal::set_blocked_t{1};
 			}
 
-			const struct guard final {
-				mutex & m;
-
-				~guard() noexcept { m.state.store(nullptr); }
-			} g{*this};
+			const struct guard final { mutex & m; ~guard() noexcept { m.state.store({}); } } g{*this}; //defer...
 
 			co_return co_await std::move(t);
 		}
@@ -745,6 +763,11 @@ namespace lazy {
 				//TODO: [C++26] contract_assert(ptr->handle);
 				return true;
 			}
+		}
+
+		auto get_id() const noexcept -> id {
+			if(valueless()) return {};
+			else return ptr->root.get_id();
 		}
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return ptr->root.timer.elapsed(); }
