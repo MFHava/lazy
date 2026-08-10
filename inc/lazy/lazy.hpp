@@ -159,7 +159,7 @@ namespace lazy {
 			} timer;
 
 			struct {
-				const log_level level;
+				/*const*/ log_level level;
 				std::vector<log_message> messages; //TODO: allocators?
 			} logging;
 		};
@@ -502,79 +502,6 @@ namespace lazy {
 		}
 	};
 
-	//! @brief cooperative synchronous(!) recursive coroutine root task
-	//! @tparam Result return type of the task
-	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
-	template<typename Result = void>
-	struct [[nodiscard]] root_task final {
-		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
-
-		struct promise_type final : internal::task_promise<Result> {
-			internal::root_data root;
-
-			promise_type() noexcept : promise_type{log_level::trace} {} //TODO: remove this ctor?
-
-			promise_type(log_level level, auto &&... /*args*/) noexcept : root{.top = std::coroutine_handle<promise_type>::from_promise(*this), .logging{.level = level}} { //free function with no allocator
-				this->data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
-			}
-			promise_type(auto & /*this*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with no allocator
-			promise_type(std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //free function with allocator
-			promise_type(auto & /*this*/, std::allocator_arg_t, auto & /*allocator*/, log_level level, auto &&... /*args*/) noexcept : promise_type{level} {} //member function with allocator
-
-			auto get_return_object() noexcept { return root_task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-		};
-
-		auto valueless() const noexcept -> bool { return not handle; }
-
-		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
-
-		auto wait() -> state /*TODO: [C++26] pre(not valueless()) post(result: result == state::blocked or done())*/ { return wait_with([]() noexcept { return false; }); }
-
-		template<typename Rep, typename Period>
-		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(clock::now() + duration); }
-
-		template<typename Clock, typename Duration>
-		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
-#if __cpp_lib_chrono >= 201907L
-			static_assert(std::chrono::is_clock_v<Clock>);
-#endif
-			return wait_with([&]() noexcept { return Clock::now() >= time; });
-		}
-
-		template<typename Func>
-		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
-			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
-			if(done()) return state::done;
-			auto & promise{handle.promise()};
-			auto & root{promise.root};
-			root.suspend.ctx = std::addressof(func);
-			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-			root.blocked = false;
-			root.timer.start();
-			{
-				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{root}; //defer...
-				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				promise.root.top.resume();
-			}
-			return done() ? state::done
-			              : root.blocked ? state::blocked
-			                             : state::suspended;
-		}
-
-		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return handle.promise().has_result(); }
-
-		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
-
-		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.timer.elapsed(); }
-
-		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return handle.promise().root.logging.messages; }
-	private:
-		root_task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
-
-		internal::unique_handle<promise_type> handle;
-	};
-
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
 	//! additional supported coroutine statements:
@@ -593,6 +520,8 @@ namespace lazy {
 	private:
 		friend
 		internal::promise_base;
+		friend
+		root_task<Result>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -737,7 +666,6 @@ namespace lazy {
 		internal::unique_handle<promise_type> handle;
 	};
 
-
 	//! @brief synchronization primitive
 	class mutex final {
 		std::atomic<const void *> state{nullptr};
@@ -765,6 +693,79 @@ namespace lazy {
 
 			co_return co_await std::move(t);
 		}
+	};
+
+	//! @brief root of coroutine stack
+	//! @tparam Result return type of the task
+	template<typename Result = void>
+	class [[nodiscard]] root_task final {
+		internal::root_data root;
+		internal::unique_handle<typename task<Result>::promise_type> handle;
+	public:
+		//TODO: [[deprecated]]
+		root_task(task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root_task{log_level::trace, std::move(task)} {}
+
+		root_task(log_level level, task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root{.logging{.level = level}}, handle{std::move(task.handle)} {
+			root.top = handle;
+			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		}
+
+		root_task(root_task && other) noexcept : root{std::exchange(other.root, {})}, handle{std::exchange(other.handle, {})} {
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+		}
+
+		auto operator=(root_task && other) noexcept -> root_task & {
+			std::swap(root, other.root);
+			std::swap(handle, other.handle);
+			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(root));
+			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.root));
+			return *this;
+		}
+
+		~root_task() noexcept =default;
+
+		auto valueless() const noexcept -> bool { return not handle; }
+
+		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
+
+		auto wait() -> state /*TODO: [C++26] pre(not valueless()) post(result: result == state::blocked or done())*/ { return wait_with([]() noexcept { return false; }); }
+
+		template<typename Rep, typename Period>
+		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(clock::now() + duration); }
+
+		template<typename Clock, typename Duration>
+		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
+#if __cpp_lib_chrono >= 201907L
+			static_assert(std::chrono::is_clock_v<Clock>);
+#endif
+			return wait_with([&]() noexcept { return Clock::now() >= time; });
+		}
+
+		template<typename Func>
+		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
+			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
+			if(done()) return state::done;
+			root.suspend.ctx = std::addressof(func);
+			root.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+			root.blocked = false;
+			root.timer.start();
+			{
+				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{root}; //defer...
+				//TODO: [C++26] contract_assert(data.top and not data.top.done());
+				root.top.resume();
+			}
+			return done() ? state::done
+			              : root.blocked ? state::blocked
+			                             : state::suspended;
+		}
+
+		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return handle.promise().has_result(); }
+
+		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
+
+		auto elapsed() const noexcept -> duration { return root.timer.elapsed(); }
+
+		auto log() const noexcept -> std::span<const log_message> { return root.logging.messages; }
 	};
 }
 
