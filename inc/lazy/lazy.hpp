@@ -20,7 +20,6 @@
 #include <source_location>
 
 //TODO: introduce id-type instead of using const void *?
-//TODO: reduce code redundancies (especially root_task and root_generator)
 //TODO: solution for supporting fork-join pattern?
 //TODO: TLS replacement?
 
@@ -44,7 +43,7 @@ namespace lazy {
 	struct task;
 
 	template<typename>
-	class root;
+	class root_base;
 
 	enum class state {
 		done,      //!< execution completed, result is ready
@@ -134,23 +133,19 @@ namespace lazy {
 			} suspend;
 
 			class {
-				template<typename>
-				friend
-				struct lazy::root;
-
 				duration elapsed_{};
 				std::optional<clock::time_point> last_resume; //set => coroutine stack is running...
 
 				static
 				auto now() noexcept -> clock::time_point { return clock::now(); }
-
+			public:
 				void start() /*TODO: [C++26] post(last_resume)*/ { last_resume = now(); }
 
 				void stop() /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
 					elapsed_ += (now() - *last_resume);
 					last_resume.reset();
 				}
-			public:
+
 				auto elapsed() const noexcept -> duration {
 					if(not last_resume) return elapsed_;
 					else return elapsed_ + (now() - *last_resume);
@@ -541,7 +536,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root<task>;
+		root_base<task>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -562,7 +557,7 @@ namespace lazy {
 			Result * ptr;
 			class {
 				//! @attention tagged "union"
-				//! LSB set => yielding to root_generator => must update ptr in root_data and suspend
+				//! LSB set => yielding to root<generator> => must update ptr in root_data and suspend
 				//! else: address of coroutine_handle to yield to
 				std::uintptr_t data{0};
 
@@ -699,7 +694,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root<generator>;
+		root_base<generator>;
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -735,29 +730,25 @@ namespace lazy {
 		}
 	};
 
-	template<typename>
-	class root;
-
-	//! @brief root of coroutine stack
-	//! @tparam Result return type of the task
-	template<typename Result>
-	class [[nodiscard]] root<task<Result>> final {
-		internal::root_data rd;
-		internal::unique_handle<typename task<Result>::promise_type> handle;
-	public:
+	//! @brief common operations of all root-specializations
+	//! @tparam Wrapper type of wrapper that is managed
+	template<typename Wrapper>
+	struct root_base {
 		//TODO: [[deprecated]]
-		root(task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : root{log_level::trace, std::move(task)} {}
+		root_base(Wrapper w) /*TODO: [C++26] pre(not w.valueless())*/ : root_base{log_level::trace, std::move(w)} {}
 
-		root(log_level level, task<Result> task) /*TODO: [C++26] pre(not task.valueless())*/ : rd{.logging{.level = level}}, handle{std::move(task.handle)} {
+		root_base(log_level level, Wrapper w) /*TODO: [C++26] pre(not w.valueless())*/ : handle{std::move(w.handle)} {
+			rd.logging.level = level;
 			rd.top = handle;
 			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
+			if constexpr(requires{ handle.promise().yield_target; }) handle.promise().yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
 		}
 
-		root(root && other) noexcept : rd{std::exchange(other.rd, {})}, handle{std::exchange(other.handle, {})} {
+		root_base(root_base && other) noexcept : rd{std::exchange(other.rd, {})}, handle{std::exchange(other.handle, {})} {
 			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
 		}
 
-		auto operator=(root && other) noexcept -> root & {
+		auto operator=(root_base && other) noexcept -> root_base & {
 			std::swap(rd, other.rd);
 			std::swap(handle, other.handle);
 			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
@@ -765,85 +756,11 @@ namespace lazy {
 			return *this;
 		}
 
-		~root() noexcept =default;
-
-		auto valueless() const noexcept -> bool { return not handle; }
-
-		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return handle.done(); }
-
-		auto wait() -> state /*TODO: [C++26] pre(not valueless()) post(result: result == state::blocked or done())*/ { return wait_with([]() noexcept { return false; }); }
-
-		template<typename Rep, typename Period>
-		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(clock::now() + duration); }
-
-		template<typename Clock, typename Duration>
-		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
-#if __cpp_lib_chrono >= 201907L
-			static_assert(std::chrono::is_clock_v<Clock>);
-#endif
-			return wait_with([&]() noexcept { return Clock::now() >= time; });
-		}
-
-		template<typename Func>
-		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ { //TODO: replace Func with function_ref<bool() noexcept>
-			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
-			if(done()) return state::done;
-			rd.suspend.ctx = std::addressof(func);
-			rd.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
-			rd.suspension_state.reset();
-			rd.timer.start();
-			{
-				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{rd}; //defer...
-				//TODO: [C++26] contract_assert(data.top and not data.top.done());
-				rd.top.resume();
-			}
-			if(done()) return state::done;
-			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
-		}
-
-		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return handle.promise().has_result(); }
-
-		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return handle.promise().get_result(); }
+		~root_base() noexcept =default;
 
 		auto elapsed() const noexcept -> duration { return rd.timer.elapsed(); }
 
 		auto log() const noexcept -> std::span<const log_message> { return rd.logging.messages; }
-	};
-
-	template<typename T>
-	root(task<T>) -> root<task<T>>;
-	template<typename T>
-	root(log_level, task<T>) -> root<task<T>>;
-
-	//! @brief root of coroutine stack
-	//! @tparam Result return type of the generator
-	template<typename Result>
-	class [[nodiscard]] root<generator<Result>> final {
-		internal::root_data rd;
-		internal::unique_handle<typename generator<Result>::promise_type> handle;
-	public:
-		//TODO: [[deprecated]]
-		root(generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : root{log_level::trace, std::move(generator)} {}
-
-		root(log_level level, generator<Result> generator) /*TODO: [C++26] pre(not generator.valueless())*/ : rd{.logging{.level = level}}, handle{std::move(generator.handle)} {
-			rd.top = handle;
-			handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
-			handle.promise().yield_target.set_update_suspension_state();
-		}
-
-		root(root && other) noexcept : rd{std::exchange(other.rd, {})}, handle{std::exchange(other.handle, {})} {
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
-		}
-
-		auto operator=(root && other) noexcept -> root & {
-			std::swap(rd, other.rd);
-			std::swap(handle, other.handle);
-			if(handle) handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(rd));
-			if(other.handle) other.handle.promise().data = reinterpret_cast<std::uintptr_t>(std::addressof(other.rd));
-			return *this;
-		}
-
-		~root() noexcept =default;
 
 		auto valueless() const noexcept -> bool { return not handle; }
 
@@ -878,14 +795,37 @@ namespace lazy {
 			if(done()) return state::done;
 			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
+	protected:
+		internal::root_data rd;
+		internal::unique_handle<typename Wrapper::promise_type> handle;
+	};
 
-		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return rd.suspension_state.has_yield_result(); }
+	//! @brief root of coroutine stack
+	//! @tparam Wrapper type of wrapper that is managed
+	template<typename Wrapper>
+	class root;
 
-		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return static_cast<Result &&>(*reinterpret_cast<Result *>(rd.suspension_state.yield_result())); }
+	template<typename Result>
+	struct [[nodiscard]] root<task<Result>> final : root_base<task<Result>> {
+		using root_base<task<Result>>::root_base;
 
-		auto elapsed() const noexcept -> duration { return rd.timer.elapsed(); }
+		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return this->handle.promise().has_result(); }
 
-		auto log() const noexcept -> std::span<const log_message> { return rd.logging.messages; }
+		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return this->handle.promise().get_result(); }
+	};
+
+	template<typename T>
+	root(task<T>) -> root<task<T>>;
+	template<typename T>
+	root(log_level, task<T>) -> root<task<T>>;
+
+	template<typename Result>
+	struct [[nodiscard]] root<generator<Result>> final : root_base<generator<Result>> {
+		using root_base<generator<Result>>::root_base;
+
+		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return this->rd.suspension_state.has_yield_result(); }
+
+		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return std::move(*reinterpret_cast<Result *>(this->rd.suspension_state.yield_result())); }
 	};
 
 	template<typename T>
