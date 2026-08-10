@@ -44,9 +44,10 @@ namespace lazy {
 	template<typename>
 	class root_base;
 
+	//TODO: documentation
 	enum class state {
-		done,      //!< execution completed, result is ready
-		suspended, //!< suspended due to timeout or request
+		done,      //!< execution completed, @c task result is ready
+		suspended, //!< suspended due to timeout or user request, @c generator result may be ready
 		blocked,   //!< suspended due to synchronization primitive
 	};
 
@@ -81,6 +82,9 @@ namespace lazy {
 		struct root_data;
 	}
 
+	//TODO: documentation
+	//TODO: formatter
+	//TODO: hasher
 	class id final {
 		std::uintptr_t val{0};
 
@@ -143,6 +147,8 @@ namespace lazy {
 			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
 
 			std::coroutine_handle<> top;
+
+			//TODO: increase encapsulation
 
 			//! @note inlined @code{.cpp} function_ref<bool() const noexcept> @endcode
 			struct {
@@ -296,7 +302,7 @@ namespace lazy {
 			class push_awaiter final : public std::suspend_always {
 				nested_info n;
 				unique_handle<T> other;
-				//! @note only acecssed when @code{.cpp} Timed == true @endcode
+				//! @note only accessed when @code{.cpp} Timed == true @endcode
 				duration elapsed;
 			public:
 				push_awaiter(unique_handle<T> other) /*TODO: [C++26] pre(other and not other.done())*/ : other{std::move(other)} {}
