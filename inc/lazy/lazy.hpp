@@ -82,9 +82,8 @@ namespace lazy {
 		struct root_data;
 	}
 
-	//TODO: documentation
-	//TODO: formatter
-	//TODO: hasher
+	//! @brief unique identifier of a coroutine stack
+	//! @note once a coroutine stack has finished, another coroutine stack may re-use the same id
 	class id final {
 		std::uintptr_t val{0};
 
@@ -93,13 +92,35 @@ namespace lazy {
 
 		friend
 		internal::root_data;
+		friend
+		std::hash<id>;
+		friend
+		std::formatter<id>;
 	public:
 		id() noexcept =default;
 
 		friend
 		auto operator<=>(id, id) noexcept =default;
 	};
+}
 
+namespace std {
+	template<>
+	struct hash<lazy::id> {
+		auto operator()(lazy::id self) const noexcept -> std::size_t {
+			return hash<std::uintptr_t>{}(self.val);
+		}
+	};
+
+	template<>
+	struct formatter<lazy::id> : formatter<std::uintptr_t> {
+		auto format(lazy::id self, auto & ctx) const {
+			return formatter<std::uintptr_t>::format(self.val, ctx);
+		}
+	};
+}
+
+namespace lazy {
 	namespace internal {
 		template<typename Promise>
 		class unique_handle final {
@@ -765,6 +786,7 @@ namespace lazy {
 			}
 		}
 
+		//! @returns the id of this coroutine stack, or a default-constructed id, if @c this is @c valueless
 		auto get_id() const noexcept -> id {
 			if(valueless()) return {};
 			else return ptr->root.get_id();
