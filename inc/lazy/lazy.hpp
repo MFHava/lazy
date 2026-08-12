@@ -42,31 +42,23 @@ namespace lazy {
 	template<typename>
 	struct task;
 
-	template<typename>
-	struct root;
-
-	//TODO: documentation
-	enum class state {
-		done,      //!< execution completed, @c task result may be ready
-		suspended, //!< suspended due to timeout or user request, @c generator result may be ready
-		blocked,   //!< suspended due to synchronization primitive
-	};
-
-	//TODO: documentation
+	//! @brief level of logging, higher levels include all messages of lower levels
 	enum class log_level {
-		fatal,
+		fatal, //!< log only fatal events, reserved for internal errors
 		error,
 		warning,
 		info,
 		debug,
-		trace,
+		trace, //!< reserved for dumping
 	};
 
-	//TODO: documentation
+	//! @brief entry in log
 	struct log_message final {
+		//! @brief code location the message was created
+		//! @note due to the way coroutines are expanded, this may not be an exact location
 		std::source_location location;
 		log_level level;
-		//! @brief if @code{.cpp} level == log_level::trace @endcode, then @c data is: @c [filename\0content], else it is the log mesage
+		//! @note if @code{.cpp} level == log_level::trace @endcode, then @c data is: @c [filename\0content], else it is the log mesage
 		std::string data;
 	};
 
@@ -513,38 +505,43 @@ namespace lazy {
 	constexpr
 	internal::blocked_t blocked;
 
-	//TODO: documentation
+	//TODO: more elegant approach?
+	//! @brief awaiter to create error-log entry
 	template<typename... Args>
-	struct [[nodiscard("must be awaited to take effect")]] error final : internal::log_message<Args...> {
+	struct [[nodiscard]] error final : internal::log_message<Args...> {
 		error(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::error, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	error(std::format_string<Args...>, Args &&...) -> error<Args...>;
-	//TODO: documentation
+
+	//! @brief awaiter to create warning-log entry
 	template<typename... Args>
-	struct [[nodiscard("must be awaited to take effect")]] warning final : internal::log_message<Args...> {
+	struct [[nodiscard]] warning final : internal::log_message<Args...> {
 		warning(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::warning, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	warning(std::format_string<Args...>, Args &&...) -> warning<Args...>;
-	//TODO: documentation
+
+	//! @brief awaiter to create info-log entry
 	template<typename... Args>
-	struct [[nodiscard("must be awaited to take effect")]] info final : internal::log_message<Args...> {
+	struct [[nodiscard]] info final : internal::log_message<Args...> {
 		info(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::info, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	info(std::format_string<Args...>, Args &&...) -> info<Args...>;
-	//TODO: documentation
+
+	//! @brief awaiter to create debug-log entry
 	template<typename... Args>
-	struct [[nodiscard("must be awaited to take effect")]] debug final : internal::log_message<Args...> {
+	struct [[nodiscard]] debug final : internal::log_message<Args...> {
 		debug(std::format_string<Args...> fmt, Args &&... args, std::source_location loc = std::source_location::current()) noexcept : internal::log_message<Args...>{log_level::debug, fmt, std::forward<Args>(args)..., loc} {}
 	};
 	template<typename... Args>
 	debug(std::format_string<Args...>, Args &&...) -> debug<Args...>;
 
-	//TODO: documentation
+	//! @brief base class for  awaiter to create trace-log entry
 	class dump_base : public internal::await_base {
 		//TODO: documentation
+		//TODO: replace with functor?
 		virtual
 		void dump_to(std::back_insert_iterator<std::string> result) const =0;
 
@@ -565,6 +562,16 @@ namespace lazy {
 			return rd.suspend();
 		}
 	};
+
+	//! @brief root of coroutine stack
+	//! @tparam Wrapper type of wrapper that is managed
+	template<typename Wrapper>
+	struct root;
+
+	template<typename Wrapper>
+	root(Wrapper) -> root<Wrapper>;
+	template<typename Wrapper>
+	root(log_level, Wrapper) -> root<Wrapper>;
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
@@ -787,11 +794,6 @@ namespace lazy {
 		}
 	};
 
-	//! @brief root of coroutine stack
-	//! @tparam Wrapper type of wrapper that is managed
-	template<typename Wrapper>
-	struct root;
-
 #if __cpp_lib_optional < 202506L
 	#warning optional<T&> is not supported by your implementation, using optional_ref as transitional solution.
 	namespace internal {
@@ -842,6 +844,13 @@ namespace lazy {
 		};
 	}
 #endif
+
+	//! @brief state of coroutine stack when waiting ends
+	enum class state {
+		done,      //!< execution completed, @c task result may be ready
+		suspended, //!< suspended due to timeout or user request, @c generator result may be ready
+		blocked,   //!< suspended due to synchronization primitive
+	};
 
 	template<template<typename> typename Wrapper, typename Result>
 	struct [[nodiscard]] root<Wrapper<Result>> final {
@@ -925,10 +934,5 @@ namespace lazy {
 		};
 		std::unique_ptr<data> ptr{std::make_unique<data>()};
 	};
-
-	template<typename Wrapper>
-	root(Wrapper) -> root<Wrapper>;
-	template<typename Wrapper>
-	root(log_level, Wrapper) -> root<Wrapper>;
 }
 
