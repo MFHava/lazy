@@ -193,18 +193,17 @@ namespace lazy {
 			class {
 				//! @attention tagged "union"
 				//! LSB set => suspended due to being blocked
-				//! else: for root<task<?>>: UNUSED
-				//! else: for root<generator<?>>:
+				//! else:
 				//!   if equal to 0 => suspended without value
-				//!   else => pointer to last yield-result
+				//!   else => pointer to last result available to root
 				std::uintptr_t data;
 			public:
 				void reset() noexcept { data = 0; }
 
-				void set_yield_result(void * ptr) /*TODO: [C++26] pre(data == 0)*/ { data = reinterpret_cast<std::uintptr_t>(ptr); }
+				void set_result(void * ptr) /*TODO: [C++26] pre(data == 0)*/ { data = reinterpret_cast<std::uintptr_t>(ptr); }
 				void set_blocked() /*TODO: [C++26] pre(data == 0)*/ { data = 1U; }
 
-				auto yield_result() const noexcept -> void * {
+				auto result() const noexcept -> void * {
 					if(blocked()) return nullptr;
 					return reinterpret_cast<void *>(data);
 				}
@@ -435,7 +434,7 @@ namespace lazy {
 			void return_value(U && value) {
 				new(std::addressof(result)) T(std::forward<U>(value));
 				initialized = true;
-				if(update_suspension_state) this->data.get_root().suspension_state.set_yield_result(std::addressof(result));
+				if(update_suspension_state) this->data.get_root().suspension_state.set_result(std::addressof(result));
 			}
 
 			auto get_result() -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
@@ -642,7 +641,7 @@ namespace lazy {
 							promise.ptr = std::addressof(val);
 							return cont;
 						} else {
-							promise.data.find_root().suspension_state.set_yield_result(std::addressof(val));
+							promise.data.find_root().suspension_state.set_result(std::addressof(val));
 							return std::noop_coroutine();
 						}
 					}
@@ -663,7 +662,7 @@ namespace lazy {
 					ptr = std::addressof(val);
 					return awaiter{{}, cont};
 				} else {
-					data.find_root().suspension_state.set_yield_result(std::addressof(val));
+					data.find_root().suspension_state.set_result(std::addressof(val));
 					return awaiter{{}, std::noop_coroutine()};
 				}
 			}
@@ -908,9 +907,9 @@ namespace lazy {
 
 		auto result() requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(not valueless())*/ {
 #if __cpp_lib_optional < 202506L
-			return internal::optional_ref<Result>{reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result())};
+			return internal::optional_ref<Result>{reinterpret_cast<Result *>(ptr->root.suspension_state.result())};
 #else
-			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result())}) return std::optional<Result &>{*p};
+			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.result())}) return std::optional<Result &>{*p};
 			return std::optional<Result &>{};
 #endif
 		}
@@ -922,7 +921,7 @@ namespace lazy {
 				auto & p{handle.promise()};
 				p.data.set_root(root);
 				if constexpr(requires{ p.yield_target; }) p.yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
-				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storeage in root_data
+				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
 			}
 
 			internal::root_data root;
