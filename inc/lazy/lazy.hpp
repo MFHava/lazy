@@ -42,7 +42,7 @@ namespace lazy {
 	struct task;
 
 	template<typename>
-	struct root_base;
+	struct root;
 
 	//TODO: documentation
 	enum class state {
@@ -421,25 +421,33 @@ namespace lazy {
 
 		template<typename T>
 		class task_promise : public promise_base {
-			std::optional<T> result;
+			union { T result; };
+			bool initialized{false};
 		public:
+			bool update_suspension_state{false};
+
+			task_promise() noexcept {}
+			task_promise(const task_promise &) =delete;
+			auto operator=(const task_promise &) -> task_promise & =delete;
+			~task_promise() noexcept { if(initialized) result.~T(); }
+
 			template<typename U = T>
-			void return_value(U && value) noexcept { result.emplace(std::move(value)); }
+			void return_value(U && value) {
+				new(std::addressof(result)) T(std::forward<U>(value));
+				initialized = true;
+				if(update_suspension_state) this->data.get_root().suspension_state.set_yield_result(std::addressof(result));
+			}
 
-			auto has_result() const noexcept -> bool { return result.has_value(); }
-
-			auto get_result() -> T & /*TODO: [C++26] pre(result)*/ { return *result; }
+			auto get_result() -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
 		};
 
 		template<>
-		class task_promise<void> : public promise_base {
-			bool initialized{false};
-		public:
-			void return_void() noexcept { initialized = true; }
+		struct task_promise<void> : promise_base {
+			static
+			void return_void() noexcept {}
 
-			auto has_result() const noexcept -> bool { return initialized; }
-
-			void get_result() const /*TODO: [C++26] pre(initialized)*/ {}
+			static
+			void get_result() noexcept {}
 		};
 
 		struct progress_t final : yield_base {
@@ -582,7 +590,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root_base<task>;
+		root<task>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -750,7 +758,7 @@ namespace lazy {
 		friend
 		internal::promise_base;
 		friend
-		root_base<generator>;
+		root<generator>;
 
 		generator(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -784,14 +792,17 @@ namespace lazy {
 		}
 	};
 
-	//! @brief common operations of all root-specializations
+	//! @brief root of coroutine stack
 	//! @tparam Wrapper type of wrapper that is managed
 	template<typename Wrapper>
-	struct root_base {
-		//TODO: [[deprecated]]
-		root_base(Wrapper w) /*TODO: [C++26] pre(not w.valueless())*/ : root_base{log_level::trace, std::move(w)} {}
+	struct root;
 
-		root_base(log_level level, Wrapper w) /*TODO: [C++26] pre(not w.valueless())*/ : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
+	template<template<typename> typename Wrapper, typename Result>
+	struct [[nodiscard]] root<Wrapper<Result>> final {
+		//TODO: [[deprecated]]
+		root(Wrapper<Result> w) /*TODO: [C++26] pre(not w.valueless())*/ : root{log_level::trace, std::move(w)} {}
+
+		root(log_level level, Wrapper<Result> w) /*TODO: [C++26] pre(not w.valueless())*/ : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
 
 		auto valueless() const noexcept -> bool {
 			if(ptr) return false;
@@ -836,21 +847,28 @@ namespace lazy {
 			rd.suspension_state.reset();
 			rd.timer.start();
 			{
-				const struct guard { internal::root_data & root; ~guard() noexcept { root.timer.stop(); } } g{rd}; //defer...
+				const struct guard { internal::root_data & rd; ~guard() noexcept { rd.timer.stop(); } } g{rd}; //defer...
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
 				rd.top.resume();
 			}
 			if(done()) return state::done;
 			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
-	protected:
+
+		//TODO: [C++26] remove has_result and have result return optional<result_type &>
+
+		auto has_result() const -> bool requires(not std::is_void_v<Result>)/*TODO: [C++26] pre(not valueless())*/ { return ptr->root.suspension_state.yield_result() != nullptr; }
+
+		auto result() -> std::add_lvalue_reference_t<Result> requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(has_result())*/ { return *reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result()); }
+	private:
 		struct data final {
-			using handle_t = internal::unique_handle<typename Wrapper::promise_type>;
+			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
 			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : root{.top = h, .logging = {.level = level}}, handle{std::move(h)} {
 				auto & p{handle.promise()};
 				p.data.set_root(root);
 				if constexpr(requires{ p.yield_target; }) p.yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
+				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storeage in root_data
 			}
 
 			internal::root_data root;
@@ -859,32 +877,9 @@ namespace lazy {
 		std::unique_ptr<data> ptr{std::make_unique<data>()};
 	};
 
-	//! @brief root of coroutine stack
-	//! @tparam Wrapper type of wrapper that is managed
-	template<typename Wrapper>
-	struct root;
-
 	template<typename Wrapper>
 	root(Wrapper) -> root<Wrapper>;
 	template<typename Wrapper>
 	root(log_level, Wrapper) -> root<Wrapper>;
-
-	template<typename Result>
-	struct [[nodiscard]] root<task<Result>> final : root_base<task<Result>> {
-		using root_base<task<Result>>::root_base;
-
-		auto has_result() const -> bool /*TODO: [C++26] pre(done())*/ { return this->ptr->handle.promise().has_result(); }
-
-		auto result() -> std::add_lvalue_reference_t<Result> /*TODO: [C++26] pre(has_result())*/ { return this->ptr->handle.promise().get_result(); }
-	};
-
-	template<typename Result>
-	struct [[nodiscard]] root<generator<Result>> final : root_base<generator<Result>> {
-		using root_base<generator<Result>>::root_base;
-
-		auto has_result() const -> bool /*TODO: [C++26] pre(not done())*/ { return this->ptr->root.suspension_state.yield_result() != nullptr; }
-
-		auto result() -> Result && /*TODO: [C++26] pre(has_result())*/ { return std::move(*reinterpret_cast<Result *>(this->ptr->root.suspension_state.yield_result())); }
-	};
 }
 

@@ -36,8 +36,6 @@ TEST_CASE("throwing_not_makes_valueless", "[lazy]") {
 	try { t.wait(); }
 	catch(...) {}
 	REQUIRE(not t.valueless());
-	REQUIRE(not t.has_result());
-	t.result();
 }
 
 	template<typename T>
@@ -158,8 +156,6 @@ TEST_CASE("mutex", "[lazy]") {
 	REQUIRE(t0.result() == 10);
 
 	REQUIRE(t1.wait() == lazy::state::done);
-	REQUIRE(t1.has_result());
-	t1.result();
 }
 
 //TODO: more complex logging test case
