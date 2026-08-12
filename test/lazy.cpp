@@ -21,7 +21,6 @@ TEST_CASE("trivial", "[lazy]") {
 	REQUIRE(t.wait() == lazy::state::done);
 	REQUIRE(not t.valueless());
 
-	REQUIRE(t.has_result());
 	REQUIRE(t.result() == 1);
 	REQUIRE(not t.valueless());
 }
@@ -80,7 +79,6 @@ TEST_CASE("stateless_allocator", "[lazy]") {
 	}(std::allocator_arg, pa)};
 
 	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.has_result());
 	REQUIRE(t.result() == 1);
 }
 
@@ -98,7 +96,6 @@ TEST_CASE("nesting", "[lazy]") {
 	}()};
 
 	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.has_result());
 	REQUIRE(t.result() == 5.0);
 }
 
@@ -152,7 +149,6 @@ TEST_CASE("mutex", "[lazy]") {
 		std::println("t1 blocked");
 	}
 	REQUIRE(t0.wait() == lazy::state::done);
-	REQUIRE(t0.has_result());
 	REQUIRE(t0.result() == 10);
 
 	REQUIRE(t1.wait() == lazy::state::done);
@@ -333,45 +329,36 @@ TEST_CASE("root_generator", "[root_generator]") {
 	}()};
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 1);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 2);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(not g.has_result());
+	REQUIRE(not g.result());
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 3);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 4);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 5);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(not g.has_result());
+	REQUIRE(not g.result());
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 6);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 7);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 8);
 
 	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.has_result());
 	REQUIRE(g.result() == 9);
 
 	REQUIRE(g.wait() == lazy::state::done);

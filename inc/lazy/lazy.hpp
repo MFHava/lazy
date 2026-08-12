@@ -797,6 +797,57 @@ namespace lazy {
 	template<typename Wrapper>
 	struct root;
 
+#if __cpp_lib_optional < 202506L
+	#warning optional<T&> is not supported by your implementation, using optional_ref as transitional solution.
+	namespace internal {
+		template<typename T>
+		class optional_ref final { //TODO: [C++26] replace with optional<Result &>
+			T * ptr{nullptr};
+		public:
+			using value_type = T;
+
+			optional_ref() noexcept =default;
+			optional_ref(std::nullopt_t) noexcept {}
+
+			optional_ref(T * ptr) noexcept : ptr{ptr} {}
+
+			void swap(optional_ref & other) noexcept { std::swap(ptr, other.ptr); }
+
+			auto operator->() const -> T * /*TODO: [C++26] pre(ptr)*/ { return ptr; }
+			auto operator*() const -> T & /*TODO: [C++26] pre(ptr)*/ { return *ptr; }
+
+			explicit
+			operator bool() const noexcept { return has_value(); }
+			auto has_value() const noexcept -> bool { return ptr != nullptr; }
+
+			auto value() const -> T & { return has_value() ? **this : throw std::bad_optional_access{}; }
+
+			void reset() noexcept { ptr = nullptr; }
+
+			template<typename U>
+			friend
+			auto operator<=>(optional_ref lhs, optional_ref<U> rhs) noexcept {
+				if(lhs and rhs) return *lhs <=> *rhs;
+				return lhs.has_value() <=> rhs.has_value();
+			}
+			template<typename U>
+			friend
+			auto operator==(optional_ref lhs, optional_ref<U> rhs) noexcept -> bool {
+				if(lhs and rhs) return *lhs == *rhs;
+				if(not lhs and not rhs) return true;
+				return false;
+			}
+
+			template<typename U>
+			friend
+			auto operator<=>(optional_ref lhs, const U & rhs) noexcept { return lhs <=> optional_ref<const U>{std::addressof(rhs)}; }
+			template<typename U>
+			friend
+			auto operator==(optional_ref lhs, const U & rhs) noexcept -> bool { return lhs == optional_ref<const U>{std::addressof(rhs)}; }
+		};
+	}
+#endif
+
 	template<template<typename> typename Wrapper, typename Result>
 	struct [[nodiscard]] root<Wrapper<Result>> final {
 		//TODO: [[deprecated]]
@@ -855,11 +906,14 @@ namespace lazy {
 			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
 
-		//TODO: [C++26] remove has_result and have result return optional<result_type &>
-
-		auto has_result() const -> bool requires(not std::is_void_v<Result>)/*TODO: [C++26] pre(not valueless())*/ { return ptr->root.suspension_state.yield_result() != nullptr; }
-
-		auto result() -> std::add_lvalue_reference_t<Result> requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(has_result())*/ { return *reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result()); }
+		auto result() requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(not valueless())*/ {
+#if __cpp_lib_optional < 202506L
+			return internal::optional_ref<Result>{reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result())};
+#else
+			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.yield_result())}) return std::optional<Result &>{*p};
+			return std::optional<Result &>{};
+#endif
+		}
 	private:
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
