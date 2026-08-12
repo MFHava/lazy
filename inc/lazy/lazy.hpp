@@ -303,18 +303,11 @@ namespace lazy {
 					}
 
 					auto & promise{other.promise()};
-					if constexpr(requires { promise.get_result(); }) { //! @note task
-						using Result = decltype(promise.get_result());
-						if constexpr(std::is_void_v<Result>) {
-							if constexpr(Timed) return elapsed;
-							else return;
-						} else {
-							if constexpr(Timed) return std::make_pair(elapsed, std::move(promise.get_result()));
-							else return std::move(promise.get_result());
-						}
-					} else { //! @note generator
-						static_assert(not Timed);
-						return;
+					if constexpr(requires { promise.get_result(); }) { //! @note @c task<T> where @code{.cpp} T != void @endcode
+						if constexpr(Timed) return std::make_pair(elapsed, std::move(promise.get_result()));
+						else return std::move(promise.get_result()); //TODO: does this deduce the correct return type?
+					} else { //! @note @c generator or @c task<void>
+						if constexpr(Timed) return elapsed;
 					}
 				}
 			};
@@ -444,9 +437,6 @@ namespace lazy {
 		struct task_promise<void> : promise_base {
 			static
 			void return_void() noexcept {}
-
-			static
-			void get_result() noexcept {}
 		};
 
 		struct progress_t final : yield_base {
