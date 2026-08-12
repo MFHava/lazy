@@ -24,6 +24,7 @@
 
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
+//!  * @code{.cpp} co_yield blocked; @endcode to yield control back from the coroutine to the caller and signal that progress is not possible due to a synchronization primitive
 //!  * @code{.cpp} co_await task; @endcode block current coroutine until the awaited @c task is completed, then returns its result if any
 //!  * @code{.cpp} co_await [error|warning|info|debug]{fmt-string, args...}; @endcode create log of the respective severity
 //!  * @code{.cpp} co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if coroutine stack is executing with @c log_level::trace
@@ -444,7 +445,7 @@ namespace lazy {
 			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().data.find_root().suspend(); }
 		};
 
-		struct blocked_t final : yield_base { //TODO: add awaiter to public API?
+		struct blocked_t final : yield_base {
 			template<typename Promise>
 			void await_suspend(std::coroutine_handle<Promise> self) const noexcept { self.promise().data.find_root().suspension_state.set_blocked(); }
 		};
@@ -501,11 +502,16 @@ namespace lazy {
 	constexpr
 	internal::get_is_tracing_t get_is_tracing;
 
-	//! @brief awaiter to yield progress within a @c task or @c generator
+	//! @brief awaiter to yield progress
 	inline
 	constexpr
 	internal::progress_t progress;
 
+	//! @brief awaiter to yield progress and signal that progress is blocked by a synchronization primitive
+	//! @attention should only be used when implementing synchronization primitives
+	inline
+	constexpr
+	internal::blocked_t blocked;
 
 	//TODO: documentation
 	template<typename... Args>
@@ -772,7 +778,7 @@ namespace lazy {
 
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
 				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
-				co_yield internal::blocked_t{};
+				co_yield blocked;
 			}
 
 			const struct guard final { mutex & m; ~guard() noexcept { m.state.store({}); } } g{*this}; //defer...
