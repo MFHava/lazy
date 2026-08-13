@@ -15,6 +15,7 @@
 #include <utility>
 #include <optional>
 #include <coroutine>
+#include <functional>
 #include <type_traits>
 #include <system_error>
 #include <source_location>
@@ -32,6 +33,97 @@
 //!  * @code{.cpp} co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
 //!  * @code{.cpp} co_await timed{task}; @endcode block this coroutine until the awaited @c task is completed, then returns the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
+namespace lazy {}
+
+namespace lazy::compat {
+#if __cpp_lib_optional < 202506L
+	#warning std::optional<T &> is not supported by your implementation, using compat::optional_ref as transitional solution.
+
+	template<typename T>
+	class optional_ref final { //TODO: [C++26] replace with std::optional<T &>
+		T * ptr{nullptr};
+	public:
+		using value_type = T;
+
+		optional_ref() noexcept =default;
+		optional_ref(std::nullopt_t) noexcept {}
+
+		optional_ref(T & val) noexcept : ptr{std::addressof(val)} {}
+
+		void swap(optional_ref & other) noexcept { std::swap(ptr, other.ptr); }
+
+		auto operator->() const -> T * /*TODO: [C++26] pre(ptr)*/ { return ptr; }
+		auto operator*() const -> T & /*TODO: [C++26] pre(ptr)*/ { return *ptr; }
+
+		explicit
+		operator bool() const noexcept { return has_value(); }
+		auto has_value() const noexcept -> bool { return ptr != nullptr; }
+
+		auto value() const -> T & { return has_value() ? **this : throw std::bad_optional_access{}; }
+
+		void reset() noexcept { ptr = nullptr; }
+
+		template<typename U>
+		friend
+		auto operator<=>(optional_ref lhs, optional_ref<U> rhs) noexcept {
+			if(lhs and rhs) return *lhs <=> *rhs;
+			return lhs.has_value() <=> rhs.has_value();
+		}
+		template<typename U>
+		friend
+		auto operator==(optional_ref lhs, optional_ref<U> rhs) noexcept -> bool {
+			if(lhs and rhs) return *lhs == *rhs;
+			if(not lhs and not rhs) return true;
+			return false;
+		}
+
+		template<typename U>
+		friend
+		auto operator<=>(optional_ref lhs, const U & rhs) noexcept { return lhs <=> optional_ref<const U>{rhs}; }
+		template<typename U>
+		friend
+		auto operator==(optional_ref lhs, const U & rhs) noexcept -> bool { return lhs == optional_ref<const U>{rhs}; }
+	};
+#else
+	template<typename T>
+	using optional_ref = std::optional<T &>;
+#endif
+
+#ifndef __cpp_lib_function_ref
+	#warning std::function_ref is not supported by your implementation, using compat::function_ref as transitional solution.
+
+	template<typename... Signature>
+	class function_ref; //TODO: [C++26] replace with std::function_ref
+
+	template<typename Result, typename... Args>
+	class function_ref<Result(Args...) const noexcept> final {
+		template<typename T>
+		static
+		constexpr
+		bool is_invocable_using{std::is_nothrow_invocable_r_v<Result, T, Args...>};
+
+		const void * self;
+		Result(*func)(const void *, Args...) noexcept;
+	public:
+		template<typename F, typename T = std::remove_reference_t<F>>
+		requires(not std::same_as<function_ref, std::remove_cvref_t<F>> and is_invocable_using<const T &>)
+		function_ref(F && func) noexcept : self{std::addressof(func)}, func{[](const void * self, Args... args) noexcept -> Result { return (*reinterpret_cast<const T *>(self))(std::forward<Args>(args)...); }} {}
+
+		function_ref(const function_ref &) noexcept =default;
+		auto operator=(const function_ref &) noexcept -> function_ref & =default;
+
+		template<typename T>
+		requires(not std::same_as<T, function_ref>)
+		auto operator=(T) -> function_ref & =delete;
+
+		auto operator()(Args... args) const noexcept -> Result { return func(self, std::forward<Args>(args)...); }
+	};
+#else
+	template<typename Signature>
+	using function_ref = std::function_ref<Signature>;
+#endif
+}
+
 namespace lazy {
 	using clock = std::chrono::steady_clock;
 	using duration = clock::duration;
@@ -150,13 +242,7 @@ namespace lazy {
 
 			//TODO: increase encapsulation
 
-			//! @note inlined @code{.cpp} function_ref<bool() const noexcept> @endcode
-			struct {
-				void * ctx;
-				bool (*fptr)(void *) noexcept;
-
-				auto operator()() const noexcept -> bool { return fptr(ctx); }
-			} suspend;
+			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
 
 			class {
 				duration elapsed_{};
@@ -794,57 +880,6 @@ namespace lazy {
 		}
 	};
 
-#if __cpp_lib_optional < 202506L
-	#warning optional<T&> is not supported by your implementation, using optional_ref as transitional solution.
-	namespace internal {
-		template<typename T>
-		class optional_ref final { //TODO: [C++26] replace with optional<Result &>
-			T * ptr{nullptr};
-		public:
-			using value_type = T;
-
-			optional_ref() noexcept =default;
-			optional_ref(std::nullopt_t) noexcept {}
-
-			optional_ref(T * ptr) noexcept : ptr{ptr} {}
-
-			void swap(optional_ref & other) noexcept { std::swap(ptr, other.ptr); }
-
-			auto operator->() const -> T * /*TODO: [C++26] pre(ptr)*/ { return ptr; }
-			auto operator*() const -> T & /*TODO: [C++26] pre(ptr)*/ { return *ptr; }
-
-			explicit
-			operator bool() const noexcept { return has_value(); }
-			auto has_value() const noexcept -> bool { return ptr != nullptr; }
-
-			auto value() const -> T & { return has_value() ? **this : throw std::bad_optional_access{}; }
-
-			void reset() noexcept { ptr = nullptr; }
-
-			template<typename U>
-			friend
-			auto operator<=>(optional_ref lhs, optional_ref<U> rhs) noexcept {
-				if(lhs and rhs) return *lhs <=> *rhs;
-				return lhs.has_value() <=> rhs.has_value();
-			}
-			template<typename U>
-			friend
-			auto operator==(optional_ref lhs, optional_ref<U> rhs) noexcept -> bool {
-				if(lhs and rhs) return *lhs == *rhs;
-				if(not lhs and not rhs) return true;
-				return false;
-			}
-
-			template<typename U>
-			friend
-			auto operator<=>(optional_ref lhs, const U & rhs) noexcept { return lhs <=> optional_ref<const U>{std::addressof(rhs)}; }
-			template<typename U>
-			friend
-			auto operator==(optional_ref lhs, const U & rhs) noexcept -> bool { return lhs == optional_ref<const U>{std::addressof(rhs)}; }
-		};
-	}
-#endif
-
 	//! @brief state of coroutine stack when waiting ends
 	enum class state {
 		done,      //!< execution completed, @c task result may be ready
@@ -894,11 +929,10 @@ namespace lazy {
 
 		template<typename Func>
 		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ {
-			static_assert(requires { { func() } noexcept -> std::same_as<bool>; });
+			static_assert(requires { { func() } noexcept -> std::same_as<bool>; }); //TODO: must be const-callable
 			if(done()) return state::done;
 			auto & rd{ptr->root};
-			rd.suspend.ctx = std::addressof(func);
-			rd.suspend.fptr = +[](void * ptr) noexcept { return (*reinterpret_cast<Func *>(ptr))(); };
+			rd.suspend = compat::function_ref<bool() const noexcept>{func};
 			rd.suspension_state.reset();
 			rd.timer.start();
 			{
@@ -911,12 +945,8 @@ namespace lazy {
 		}
 
 		auto result() requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(not valueless())*/ {
-#if __cpp_lib_optional < 202506L
-			return internal::optional_ref<Result>{reinterpret_cast<Result *>(ptr->root.suspension_state.result())};
-#else
-			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.result())}) return std::optional<Result &>{*p};
-			return std::optional<Result &>{};
-#endif
+			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.result())}) return compat::optional_ref<Result>{*p};
+			return compat::optional_ref<Result>{};
 		}
 	private:
 		struct data final {
