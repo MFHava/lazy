@@ -639,10 +639,11 @@ namespace lazy {
 
 	//! @brief base class for  awaiter to create trace-log entry
 	class dump_base : public internal::await_base {
-		//TODO: documentation
-		//TODO: replace with functor?
+		//! @brief actual dumping logic, only called when @c log_level::trace is active
 		virtual
-		void dump_to(std::back_insert_iterator<std::string> result) const =0;
+		void dump_to(
+			std::back_insert_iterator<std::string> out //!< [in] iterator to write dump content to
+		) const =0;
 
 		std::string_view file_name;
 		std::source_location loc;
@@ -651,8 +652,8 @@ namespace lazy {
 
 		template<typename Promise>
 		auto await_suspend(std::coroutine_handle<Promise> self) const {
-			auto & rd{self.promise().find_root()};
-			if(rd.level == log_level::trace) {
+			auto & rd{self.promise().data.find_root()};
+			if(rd.logging.level == log_level::trace) {
 				std::string msg{file_name};
 				msg += '\0';
 				dump_to(std::back_inserter(msg));

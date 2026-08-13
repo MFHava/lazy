@@ -155,7 +155,6 @@ TEST_CASE("mutex", "[lazy]") {
 }
 
 //TODO: more complex logging test case
-//TODO: dumping test case
 TEST_CASE("logging", "[lazy]") {
 	lazy::root t{lazy::log_level::info, [] -> lazy::task<> {
 		int val{1234};
@@ -168,6 +167,34 @@ TEST_CASE("logging", "[lazy]") {
 	REQUIRE_THROWS(t.wait());
 	//REQUIRE(t.log().size() == 3);
 	std::println("Log: {}", t.log() | std::views::filter([](const auto & msg) { return msg.level < lazy::log_level::trace; }) |  std::views::transform([](const auto & msg) { return msg.data; }));
+}
+
+namespace {
+	template<std::ranges::input_range R>
+	class dump_range final : public lazy::dump_base {
+		R & r;
+
+		void dump_to(std::back_insert_iterator<std::string> out) const override {
+			std::ranges::copy(r | std::views::transform([](auto v) { return std::to_string(v); }) | std::views::join, out);
+		}
+	public:
+		dump_range(std::string_view name, R && r, std::source_location loc = std::source_location::current()) noexcept : lazy::dump_base{name, loc}, r{r} {}
+	};
+
+	template<typename R>
+	dump_range(std::string_view, R &&) -> dump_range<R>;
+}
+
+TEST_CASE("dumping", "[lazy]") {
+	lazy::root t{[] -> lazy::task<> { co_await dump_range{"test.abc", std::views::iota(0) | std::views::take(5)}; }()};
+	t.wait();
+	REQUIRE(t.log().size() == 1);
+	const std::string_view str{t.log().front().data};
+	REQUIRE(str.size() == 14);
+	const auto index{str.find('\0')};
+	REQUIRE(str.substr(0, index) == "test.abc");
+	REQUIRE(str.substr(index + 1) == "01234");
+	REQUIRE(str == std::string_view{"test.abc\00001234", 14});
 }
 
 TEST_CASE("is_tracing", "[lazy]") {
