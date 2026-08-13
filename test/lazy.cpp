@@ -184,6 +184,30 @@ TEST_CASE("is_tracing", "[lazy]") {
 	REQUIRE(t.done());
 }
 
+TEST_CASE("suspension_checker", "[lazy]") {
+	using namespace std::chrono_literals;
+
+	lazy::root t{[] -> lazy::task<> {
+		auto suspend = co_await lazy::get_suspension_checker;
+		REQUIRE(not suspend());
+	}()};
+	t.wait();
+	REQUIRE(t.done());
+
+	t = {[] -> lazy::task<> {
+		auto suspend = co_await lazy::get_suspension_checker;
+		std::this_thread::sleep_for(10ms);
+		REQUIRE(suspend());
+		co_yield lazy::progress;
+		std::print("sus");
+	}()};
+	t.wait_for(1ms);
+	REQUIRE(not t.done());
+	t.wait();
+	std::println("pend");
+	REQUIRE(t.done());
+}
+
 //TODO: timed waiting, etc.
 static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
 

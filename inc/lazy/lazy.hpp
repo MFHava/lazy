@@ -20,7 +20,6 @@
 #include <system_error>
 #include <source_location>
 
-//TODO: solution for supporting fork-join pattern?
 //TODO: TLS replacement?
 
 //! @brief coroutine statements supported by all coroutine wrappers:
@@ -241,7 +240,6 @@ namespace lazy {
 			std::coroutine_handle<> top;
 
 			//TODO: increase encapsulation
-
 			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
 
 			class {
@@ -552,6 +550,17 @@ namespace lazy {
 			auto await_resume() const noexcept -> bool { return result; }
 		};
 
+		class get_suspension_checker_t final : public await_base {
+			const root_data * rd{nullptr};
+		public:
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
+				rd = std::addressof(self.promise().data.find_root());
+				return rd->suspend();
+			}
+			auto await_resume() const noexcept { return [rd{this->rd}] noexcept { return rd->suspend(); }; }
+		};
+
 		template<typename... Args>
 		class log_message : public await_base {
 			log_level level;
@@ -580,6 +589,11 @@ namespace lazy {
 	constexpr
 	internal::get_is_tracing_t get_is_tracing;
 
+	//! @brief awaiter to request callback to manually check for suspension
+	inline
+	constexpr
+	internal::get_suspension_checker_t get_suspension_checker;
+
 	//! @brief awaiter to yield progress
 	inline
 	constexpr
@@ -591,7 +605,6 @@ namespace lazy {
 	constexpr
 	internal::blocked_t blocked;
 
-	//TODO: more elegant approach?
 	//! @brief awaiter to create error-log entry
 	template<typename... Args>
 	struct [[nodiscard]] error final : internal::log_message<Args...> {
@@ -927,12 +940,12 @@ namespace lazy {
 			return wait_with([&]() noexcept { return Clock::now() >= time; });
 		}
 
-		template<typename Func>
-		auto wait_with(Func func) -> state /*TODO: [C++26] pre(not valueless())*/ {
-			static_assert(requires { { func() } noexcept -> std::same_as<bool>; }); //TODO: must be const-callable
+		auto wait_with(
+			compat::function_ref<bool() const noexcept> suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
+		) -> state /*TODO: [C++26] pre(not valueless())*/ {
 			if(done()) return state::done;
 			auto & rd{ptr->root};
-			rd.suspend = compat::function_ref<bool() const noexcept>{func};
+			rd.suspend = suspend;
 			rd.suspension_state.reset();
 			rd.timer.start();
 			{
