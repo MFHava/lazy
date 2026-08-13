@@ -35,6 +35,21 @@
 namespace lazy {}
 
 namespace lazy::compat {
+#if __cpp_lib_chrono < 201907L
+	#warning std::chrono::is_clock_v is not supported by your implementation, using compat::is_clock_v as transitional solution.
+	//! @note @c high_resolution_clock can be an alias, so dedicated specilizations are not an option...
+	template<typename T>
+	requires(std::same_as<T, std::chrono::steady_clock> or std::same_as<T, std::chrono::system_clock> or std::same_as<T, std::chrono::high_resolution_clock>)
+	inline
+	constexpr
+	bool is_clock_v{true};
+#else
+	template<typename T>
+	inline
+	constexpr
+	bool is_clock_v{std::chrono::is_clock_v<T>};
+#endif
+
 #if __cpp_lib_optional < 202506L
 	#warning std::optional<T &> is not supported by your implementation, using compat::optional_ref as transitional solution.
 
@@ -935,9 +950,7 @@ namespace lazy {
 
 		template<typename Clock, typename Duration>
 		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
-#if __cpp_lib_chrono >= 201907L
-			static_assert(std::chrono::is_clock_v<Clock>);
-#endif
+			static_assert(compat::is_clock_v<Clock>);
 			return wait_with([&]() noexcept { return Clock::now() >= time; });
 		}
 
