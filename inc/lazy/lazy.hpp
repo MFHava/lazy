@@ -110,18 +110,21 @@ namespace lazy::compat {
 	class function_ref; //TODO: [C++26] replace with std::function_ref
 
 	template<typename Result, typename... Args>
-	class function_ref<Result(Args...) const noexcept> final {
+	class function_ref<Result(Args...)> final {
 		template<typename T>
 		static
 		constexpr
-		bool is_invocable_using{std::is_nothrow_invocable_r_v<Result, T, Args...>};
+		bool is_invocable_using{std::is_invocable_r_v<Result, T, Args...>};
 
-		const void * self;
-		Result(*func)(const void *, Args...) noexcept;
+		void * self;
+		Result(*disp)(void *, Args...);
 	public:
 		template<typename F, typename T = std::remove_reference_t<F>>
-		requires(not std::same_as<function_ref, std::remove_cvref_t<F>> and is_invocable_using<const T &>)
-		function_ref(F && func) noexcept : self{std::addressof(func)}, func{[](const void * self, Args... args) noexcept -> Result { return (*reinterpret_cast<const T *>(self))(std::forward<Args>(args)...); }} {}
+		requires(not std::same_as<function_ref, std::remove_cvref_t<F>> and is_invocable_using<T &>)
+		function_ref(F && func) noexcept {
+			self = std::addressof(func);
+			disp = +[](void * self, Args... args) -> Result { return (*reinterpret_cast<T *>(self))(std::forward<Args>(args)...); };
+		}
 
 		function_ref(const function_ref &) noexcept =default;
 		auto operator=(const function_ref &) noexcept -> function_ref & =default;
@@ -130,7 +133,34 @@ namespace lazy::compat {
 		requires(not std::same_as<T, function_ref>)
 		auto operator=(T) -> function_ref & =delete;
 
-		auto operator()(Args... args) const noexcept -> Result { return func(self, std::forward<Args>(args)...); }
+		auto operator()(Args... args) const -> Result { return disp(self, std::forward<Args>(args)...); }
+	};
+
+	template<typename Result, typename... Args>
+	class function_ref<Result(Args...) const noexcept> final {
+		template<typename T>
+		static
+		constexpr
+		bool is_invocable_using{std::is_nothrow_invocable_r_v<Result, T, Args...>};
+
+		const void * self;
+		Result(*disp)(const void *, Args...) noexcept;
+	public:
+		template<typename F, typename T = std::remove_reference_t<F>>
+		requires(not std::same_as<function_ref, std::remove_cvref_t<F>> and is_invocable_using<const T &>)
+		function_ref(F && func) noexcept {
+			self = std::addressof(func);
+			disp = +[](const void * self, Args... args) noexcept -> Result { return (*reinterpret_cast<const T *>(self))(std::forward<Args>(args)...); };
+		}
+
+		function_ref(const function_ref &) noexcept =default;
+		auto operator=(const function_ref &) noexcept -> function_ref & =default;
+
+		template<typename T>
+		requires(not std::same_as<T, function_ref>)
+		auto operator=(T) -> function_ref & =delete;
+
+		auto operator()(Args... args) const noexcept -> Result { return disp(self, std::forward<Args>(args)...); }
 	};
 #else
 	template<typename Signature>
@@ -257,30 +287,33 @@ namespace lazy {
 			//TODO: increase encapsulation
 			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
 
-			class {
-				duration elapsed_{};
-				std::optional<clock::time_point> last_resume; //set => coroutine stack is running...
-
-				static
-				auto now() noexcept -> clock::time_point { return clock::now(); }
+			class stable_funcs_t final {
+				const
+				struct vtable final {
+					duration(*elapsed)(const void *)noexcept;
+					bool(*is_tracing)(const void *) noexcept;
+					void(*add_log_message)(void *, std::source_location, log_level, compat::function_ref<std::string()>);
+				} * vptr;
+				void * self;
 			public:
-				void start() /*TODO: [C++26] post(last_resume)*/ { last_resume = now(); }
-
-				void stop() /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
-					elapsed_ += (now() - *last_resume);
-					last_resume.reset();
+				template<typename T>
+				stable_funcs_t(T && obj) : self{std::addressof(obj)} {
+					using U = std::remove_reference_t<T>;
+					static constexpr vtable vtable{
+						+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->timer.elapsed(); },
+						+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
+						+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
+							auto ptr{reinterpret_cast<U *>(self)};
+							if(ptr->level <= log) ptr->log.emplace_back(loc, log, msg());
+						}
+					};
+					vptr = &vtable;
 				}
 
-				auto elapsed() const noexcept -> duration {
-					if(not last_resume) return elapsed_;
-					else return elapsed_ + (now() - *last_resume);
-				}
-			} timer;
-
-			struct {
-				const log_level level;
-				std::vector<log_message> messages; //TODO: allocators?
-			} logging;
+				auto elapsed() const noexcept -> duration { return vptr->elapsed(self); }
+				auto is_tracing() const noexcept -> bool { return vptr->is_tracing(self); }
+				auto add_log_message(std::source_location loc, log_level log, compat::function_ref<std::string()> msg) { vptr->add_log_message(self, loc, log, msg); }
+			} stable_funcs;
 
 			class {
 				//! @attention tagged "union"
@@ -359,8 +392,8 @@ namespace lazy {
 					//! @note loc will not identify the actual throw-site, due to the coroutine body transformation
 					auto & rd{data.get_root()};
 					try { throw; }
-					catch(const std::exception & exc) { rd.logging.messages.emplace_back(loc, log_level::fatal, exc.what()); }
-					catch(...) { rd.logging.messages.emplace_back(loc, log_level::fatal, "unknown error"); }
+					catch(const std::exception & exc) { rd.stable_funcs.add_log_message(loc, log_level::fatal, [&] { return std::string{exc.what()}; }); }
+					catch(...) { rd.stable_funcs.add_log_message(loc, log_level::fatal, [] { return std::string{"unknown error"}; }); }
 					throw;
 				}
 			}
@@ -382,7 +415,7 @@ namespace lazy {
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto & rd{n.root->data.get_root()};
 					rd.top = other;
-					if constexpr(Timed) elapsed = rd.timer.elapsed();
+					if constexpr(Timed) elapsed = rd.stable_funcs.elapsed();
 					if(rd.suspend()) return std::noop_coroutine();
 					else return rd.top;
 				}
@@ -391,7 +424,7 @@ namespace lazy {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 					if constexpr(Timed) {
 						auto & rd{n.root->data.get_root()};
-						elapsed = rd.timer.elapsed() - elapsed;
+						elapsed = rd.stable_funcs.elapsed() - elapsed;
 					}
 
 					auto & promise{other.promise()};
@@ -559,7 +592,7 @@ namespace lazy {
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
 				const auto & rd{self.promise().data.find_root()};
-				result = rd.logging.level == log_level::trace;
+				result = rd.stable_funcs.is_tracing();
 				return rd.suspend();
 			}
 			auto await_resume() const noexcept -> bool { return result; }
@@ -588,7 +621,7 @@ namespace lazy {
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) const -> bool {
 				auto & rd{self.promise().data.find_root()};
-				if(rd.logging.level >= level) rd.logging.messages.emplace_back(loc, level, std::vformat(fmt, args));
+				rd.stable_funcs.add_log_message(loc, level, [&] { return std::vformat(fmt, args); });
 				return rd.suspend();
 			}
 		};
@@ -668,12 +701,12 @@ namespace lazy {
 		template<typename Promise>
 		auto await_suspend(std::coroutine_handle<Promise> self) const {
 			auto & rd{self.promise().data.find_root()};
-			if(rd.logging.level == log_level::trace) {
+			rd.stable_funcs.add_log_message(loc, log_level::trace, [&] {
 				std::string msg{file_name};
 				msg += '\0';
 				dump_to(std::back_inserter(msg));
-				rd.logging.messages.emplace_back(loc, log_level::trace, std::move(msg));
-			}
+				return msg;
+			});
 			return rd.suspend();
 		}
 	};
@@ -934,12 +967,12 @@ namespace lazy {
 		//! @returns the id of this coroutine stack, or a default-constructed id, if @c this is @c valueless
 		auto get_id() const noexcept -> id {
 			if(valueless()) return {};
-			else return ptr->root.get_id();
+			else return ptr->rd.get_id();
 		}
 
-		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return ptr->root.timer.elapsed(); }
+		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return ptr->timer.elapsed(); }
 
-		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return ptr->root.logging.messages; }
+		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return ptr->log; }
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return ptr->handle.done(); }
 
@@ -958,12 +991,13 @@ namespace lazy {
 			compat::function_ref<bool() const noexcept> suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
 		) -> state /*TODO: [C++26] pre(not valueless())*/ {
 			if(done()) return state::done;
-			auto & rd{ptr->root};
+			auto & rd{ptr->rd};
 			rd.suspend = suspend;
 			rd.suspension_state.reset();
-			rd.timer.start();
+			auto & timer{ptr->timer};
+			timer.start();
 			{
-				const struct guard { internal::root_data & rd; ~guard() noexcept { rd.timer.stop(); } } g{rd}; //defer...
+				const struct guard { timer_t & timer; ~guard() noexcept { timer.stop(); } } g{timer}; //defer...
 				//TODO: [C++26] contract_assert(data.top and not data.top.done());
 				rd.top.resume();
 			}
@@ -972,22 +1006,45 @@ namespace lazy {
 		}
 
 		auto result() requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(not valueless())*/ {
-			if(const auto p{reinterpret_cast<Result *>(ptr->root.suspension_state.result())}) return compat::optional_ref<Result>{*p};
+			if(const auto p{reinterpret_cast<Result *>(ptr->rd.suspension_state.result())}) return compat::optional_ref<Result>{*p};
 			return compat::optional_ref<Result>{};
 		}
 	private:
+		class timer_t final {
+			duration elapsed_{};
+			std::optional<clock::time_point> last_resume; //set => coroutine stack is running...
+
+			static
+			auto now() noexcept -> clock::time_point { return clock::now(); }
+		public:
+			void start() /*TODO: [C++26] post(last_resume)*/ { last_resume = now(); }
+
+			void stop() /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
+				elapsed_ += (now() - *last_resume);
+				last_resume.reset();
+			}
+
+			auto elapsed() const noexcept -> duration {
+				if(not last_resume) return elapsed_;
+				else return elapsed_ + (now() - *last_resume);
+			}
+		};
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
-			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : root{.top = h, .logging = {.level = level}}, handle{std::move(h)} {
+			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : level{level}, rd{.top = h, .stable_funcs = *this}, handle{std::move(h)} {
 				auto & p{handle.promise()};
-				p.data.set_root(root);
+				p.data.set_root(rd);
 				if constexpr(requires{ p.yield_target; }) p.yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
 				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
 			}
 
-			internal::root_data root;
+			const log_level level;
+			internal::root_data rd;
 			handle_t handle;
+			timer_t timer;
+
+			std::vector<log_message> log;
 		};
 		std::unique_ptr<data> ptr{std::make_unique<data>()};
 	};
