@@ -598,17 +598,6 @@ namespace lazy {
 			auto await_resume() const noexcept -> bool { return result; }
 		};
 
-		class get_suspension_checker_t final : public await_base {
-			const root_data * rd{nullptr};
-		public:
-			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
-				rd = std::addressof(self.promise().data.find_root());
-				return rd->suspend();
-			}
-			auto await_resume() const noexcept { return [rd{this->rd}] noexcept { return rd->suspend(); }; }
-		};
-
 		template<typename... Args>
 		class log_message : public await_base {
 			log_level level;
@@ -636,11 +625,6 @@ namespace lazy {
 	inline
 	constexpr
 	internal::get_is_tracing_t get_is_tracing;
-
-	//! @brief awaiter to request callback to manually check for suspension
-	inline
-	constexpr
-	internal::get_suspension_checker_t get_suspension_checker;
 
 	//! @brief awaiter to yield progress
 	inline
