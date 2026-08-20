@@ -35,6 +35,14 @@
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
 namespace lazy {}
 
+#ifndef __cpp_contracts
+	#warning Contracts are not supported by your implementation, deactivating all contracts checks.
+
+	#define pre(...)
+	#define post(...)
+	#define contract_assert(...) do {} while(0)
+#endif
+
 namespace lazy::compat {
 #if __cpp_lib_chrono < 201907L
 	#warning std::chrono::is_clock_v is not supported by your implementation, using compat::is_clock_v as transitional solution.
@@ -67,8 +75,8 @@ namespace lazy::compat {
 
 		void swap(optional_ref & other) noexcept { std::swap(ptr, other.ptr); }
 
-		auto operator->() const -> T * /*TODO: [C++26] pre(ptr)*/ { return ptr; }
-		auto operator*() const -> T & /*TODO: [C++26] pre(ptr)*/ { return *ptr; }
+		auto operator->() const -> T * pre(ptr) { return ptr; }
+		auto operator*() const -> T & pre(ptr) { return *ptr; }
 
 		explicit
 		operator bool() const noexcept { return has_value(); }
@@ -287,9 +295,9 @@ namespace lazy {
 			}
 			~unique_handle() noexcept { if(handle) handle.destroy(); }
 
-			auto done() const /*TODO: [C++26] pre(handle)*/ { return handle.done(); }
-			void resume() /*TODO: [C++26] pre(not done())*/ { handle.resume(); }
-			auto promise() const -> Promise & /*TODO: [C++26] pre(handle)*/ { return handle.promise(); }
+			auto done() const pre(handle) { return handle.done(); }
+			void resume() pre(not done()) { handle.resume(); }
+			auto promise() const -> Promise & pre(handle) { return handle.promise(); }
 
 			explicit
 			operator bool() const noexcept { return static_cast<bool>(handle); }
@@ -343,8 +351,8 @@ namespace lazy {
 			public:
 				void reset() noexcept { data = 0; }
 
-				void set_result(void * ptr) /*TODO: [C++26] pre(data == 0)*/ { data = reinterpret_cast<std::uintptr_t>(ptr); }
-				void set_blocked() /*TODO: [C++26] pre(data == 0)*/ { data = 1U; }
+				void set_result(void * ptr) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(ptr); }
+				void set_blocked() pre(data == 0) { data = 1U; }
 
 				auto result() const noexcept -> void * {
 					if(blocked()) return nullptr;
@@ -374,9 +382,9 @@ namespace lazy {
 				void set_top(std::coroutine_handle<> handle) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
 				void set_root(root_data & rd) { data = reinterpret_cast<std::uintptr_t>(std::addressof(rd)) | 2U; }
 
-				auto get_nested() const -> nested_info * /*TODO: [C++26] pre(not (data & 2U))*/ { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-				auto get_top() const -> std::coroutine_handle<> /*TODO: [C++26] pre(not (data & 3U))*/ { return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data)); }
-				auto get_root() const -> root_data & /*TODO: [C++26] pre(not (data & 1U) and (data & 2U))*/ { return *reinterpret_cast<root_data *>(data ^ 2U); }
+				auto get_nested() const -> nested_info * pre(not (data & 2U)) { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
+				auto get_top() const -> std::coroutine_handle<> pre(not (data & 3U)) { return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data)); }
+				auto get_root() const -> root_data & pre(not (data & 1U) and (data & 2U)) { return *reinterpret_cast<root_data *>(data ^ 2U); }
 
 				auto find_root() const -> root_data & {
 					if(auto nested{get_nested()}) return nested->root->data.get_root();
@@ -423,7 +431,7 @@ namespace lazy {
 				//! @note only accessed when @code{.cpp} Timed == true @endcode
 				duration elapsed;
 			public:
-				push_awaiter(unique_handle<T> other) /*TODO: [C++26] pre(other and not other.done())*/ : other{std::move(other)} {}
+				push_awaiter(unique_handle<T> other) pre(other and not other.done()) : other{std::move(other)} {}
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
@@ -438,7 +446,7 @@ namespace lazy {
 					else return rd.top;
 				}
 
-				auto await_resume() /*TODO: [C++26] pre(other.done())*/ {
+				auto await_resume() pre(other.done()) {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 					if constexpr(Timed) {
 						auto & rd{n.root->data.get_root()};
@@ -457,22 +465,22 @@ namespace lazy {
 
 			template<bool Timed, typename T>
 			static
-			auto push(unique_handle<T> handle) /*TODO: [C++26] pre(handle and not handle.done())*/ { return push_awaiter<T, Timed>{std::move(handle)}; }
+			auto push(unique_handle<T> handle) pre(handle and not handle.done()) { return push_awaiter<T, Timed>{std::move(handle)}; }
 		public:
 			template<typename T>
 			static
-			auto await_transform(task<T> other) /*TODO: [C++26] pre(not other.valueless())*/ { return push<false>(std::move(other.handle)); }
+			auto await_transform(task<T> other) pre(not other.valueless()) { return push<false>(std::move(other.handle)); }
 
 			template<typename T>
 			static
-			auto await_transform(timed<T> other) /*TODO: [C++26] pre(not other.task.valueless())*/ { return push<true>(std::move(other.task.handle)); }
+			auto await_transform(timed<T> other) pre(not other.t.valueless()) { return push<true>(std::move(other.t.handle)); }
 
 			static
 			auto await_transform(std::derived_from<await_base> auto a) noexcept { return a; }
 
 			template<typename Self, typename T>
 			requires std::same_as<Self, typename generator<T>::promise_type>
-			auto yield_value(this Self & self, elements_of<T> other) /*TODO: [C++26] pre(not other.g.valueless() and not other.g.handle.promise().yield_target)*/ {
+			auto yield_value(this Self & self, elements_of<T> other) pre(not other.g.valueless() and not other.g.handle.promise().yield_target) {
 				other.g.handle.promise().yield_target = self.yield_target;
 				return push<false>(std::move(other.g.handle));
 			}
@@ -491,13 +499,13 @@ namespace lazy {
 			template<typename Alloc>
 			static
 			auto allocate(std::size_t size, const Alloc * alloc, ...) -> void * {
-				//TODO: [C++26] contract_assert(alloc);
+				contract_assert(alloc);
 				using A = std::allocator_traits<Alloc>::template rebind_alloc<std::byte>;
 
 				constexpr auto stateless_allocator{std::is_default_constructible_v<A> and std::allocator_traits<A>::is_always_equal::value};
 
 				const auto offset{stateless_allocator ? 0 : ((alignof(A) - (size + sizeof(deleter_t) + 1) % alignof(A)) % alignof(A))};
-				//TODO: [C++26] contract_assert(offset <= 255);
+				contract_assert(offset <= 255);
 				const auto capacity{size + sizeof(deleter_t) + (stateless_allocator ? 0 : 1 + offset + sizeof(A))};
 
 				auto dealloc{+[](std::byte * ptr, std::size_t size) noexcept {
@@ -549,7 +557,7 @@ namespace lazy {
 			void operator delete(void * ptr, std::size_t size) noexcept {
 				std::uintptr_t d;
 				std::memcpy(&d, static_cast<char *>(ptr) + size, sizeof(std::uintptr_t));
-				//TODO: [C++26] contract_assert(d);
+				contract_assert(d);
 				reinterpret_cast<deleter_t>(d)(static_cast<std::byte *>(ptr), size);
 			}
 		};
@@ -573,7 +581,7 @@ namespace lazy {
 				if(update_suspension_state) this->data.get_root().suspension_state.set_result(std::addressof(result));
 			}
 
-			auto get_result() -> T & /*TODO: [C++26] pre(initialized)*/ { return result; }
+			auto get_result() -> T & pre(initialized) { return result; }
 		};
 
 		template<>
@@ -824,7 +832,7 @@ namespace lazy {
 			});
 
 			if(error) {
-				//TODO: [C++26] contract_assert(eptr);
+				contract_assert(eptr);
 				std::rethrow_exception(eptr);
 			}
 
@@ -842,7 +850,7 @@ namespace lazy {
 	//! * @c tuple<U...>, where @c U... is the list of types @c W... from @c task<W...> with all instances of @c void removed
 	template<typename Alloc, typename... Tasks>
 	requires(sizeof...(Tasks) >= 2 and (internal::is_task_v<Tasks> and ...))
-	auto fork(std::allocator_arg_t, Alloc, Tasks... tasks) -> task<internal::compute_fork_result_t<Tasks...>> /*TODO: [C++26] pre((not tasks.valueless()) and ...)*/ {
+	auto fork(std::allocator_arg_t, Alloc, Tasks... tasks) -> task<internal::compute_fork_result_t<Tasks...>> pre((not tasks.valueless()) and ...) {
 		const auto & root{co_await internal::get_root_awaiter{}};
 
 		std::atomic<bool> error{false};
@@ -878,7 +886,7 @@ namespace lazy {
 	//! @returns a @c task managing the wrapped @c tasks, returning their results if any
 	//! @note the return type of the returned @c task is: @c void if @code{.cpp} T == void @endcode, else @c std::vector<T>
 	template<typename Alloc, typename T>
-	auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>> /*TODO: [C++26] pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); }))*/ {
+	auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
 		const auto & root{co_await internal::get_root_awaiter{}};
 
 		std::atomic<bool> error{false};
@@ -979,10 +987,10 @@ namespace lazy {
 				//! else: address of coroutine_handle to yield to (must update @c ptr)
 				std::uintptr_t data{0};
 			public:
-				void set_update_suspension_state() /*TODO: [C++26] pre(data == 0))*/ { data = 1U; }
-				void set_continuation(std::coroutine_handle<> handle) /*TODO: [C++26] pre(data == 0)*/ { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
+				void set_update_suspension_state() pre(data == 0) { data = 1U; }
+				void set_continuation(std::coroutine_handle<> handle) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
 
-				auto get() const -> std::coroutine_handle<> /*TODO: [C++26] pre(data != 0)*/ {
+				auto get() const -> std::coroutine_handle<> pre(data != 0) {
 					if(data & 1U) return {};
 					return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data));
 				}
@@ -1002,7 +1010,7 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
 						auto & promise{self.promise()};
 						if(const auto cont{promise.yield_target.get()}) {
-							//TODO: [C++26] contract_assert(not cont.done());
+							contract_assert(not cont.done());
 							promise.ptr = std::addressof(val);
 							return cont;
 						} else {
@@ -1023,7 +1031,7 @@ namespace lazy {
 				};
 
 				if(const auto cont{yield_target.get()}) {
-					//TODO: [C++26] contract_assert(not cont.done());
+					contract_assert(not cont.done());
 					ptr = std::addressof(val);
 					return awaiter{{}, cont};
 				} else {
@@ -1041,7 +1049,7 @@ namespace lazy {
 			using value_type = Result;
 			using difference_type = std::ptrdiff_t;
 
-			auto operator*() const -> Result && /*TODO: [C++26] pre(handle and not handle.done())*/ {
+			auto operator*() const -> Result && pre(handle and not handle.done()) {
 				auto & promise{handle.promise()};
 				auto top{std::coroutine_handle<promise_type>::from_address(promise.data.get_top().address())};
 				return static_cast<Result &&>(*top.promise().ptr);
@@ -1049,10 +1057,10 @@ namespace lazy {
 
 			//! @returns awaiter for lazy increment
 			//! @attention the returned awaiter must be awaited on on the coroutine that initially awaited @c generator::begin
-			auto operator++() /*TODO: [C++26] pre(handle and not handle.done())*/ { return iterator_awaiter<false>{*this}; }
+			auto operator++() pre(handle and not handle.done()) { return iterator_awaiter<false>{*this}; }
 
 			friend
-			auto operator==(const iterator & self, std::default_sentinel_t) -> bool /*TODO: [C++26] pre(self.handle)*/ { return self.handle.done(); }
+			auto operator==(const iterator & self, std::default_sentinel_t) -> bool pre(self.handle) { return self.handle.done(); }
 		private:
 			friend
 			generator;
@@ -1070,16 +1078,16 @@ namespace lazy {
 			internal::nested_info n;
 			std::coroutine_handle<> prev_top;
 		public:
-			iterator_awaiter(value_type it) /*TODO: [C++26] pre(it.handle and not it.handle.done())*/ : it{std::forward<value_type>(it)} {}
+			iterator_awaiter(value_type it) pre(it.handle and not it.handle.done()) : it{std::forward<value_type>(it)} {}
 
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
 				auto & it_promise{it.handle.promise()};
-				//TODO: [C++26] contract_assert(not (it_promise.data & 1U));
+				contract_assert(not (it_promise.data & 1U));
 
 				//! @attention connect @c it 's @c co_yield with current coroutine frame
 				if constexpr(Initial) it_promise.yield_target.set_continuation(self);
-				//TODO: [C++26] else contract_assert(it_promise.yield_target == self);
+				else contract_assert(it_promise.yield_target.get() == self);
 
 				//! @attention store enough context to remove @c it from stack on resumption (as @c generator is not permanently on top of stack)
 				prev_top = n.parent = self;
@@ -1115,7 +1123,7 @@ namespace lazy {
 		//! @returns awaiter for the initial iterator
 		//! @attention transfers ownership of the managed coroutine to the resulting iterator
 		//! @attention the returned iterator is bound to the calling coroutine
-		auto begin() /*TODO: [C++26] pre(not valueless()) post(valueless())*/ { return iterator_awaiter<true>{std::exchange(handle, {})}; }
+		auto begin() pre(not valueless()) post(valueless()) { return iterator_awaiter<true>{std::exchange(handle, {})}; }
 		static
 		auto end() noexcept -> std::default_sentinel_t { return std::default_sentinel; }
 	private:
@@ -1142,7 +1150,7 @@ namespace lazy {
 
 		//! @brief execute @c t whilst @c *this is locked
 		template<typename T>
-		auto locked(task<T> t) -> task<T> /*TODO: [C++26] pre(not t.valueless())*/ {
+		auto locked(task<T> t) -> task<T> pre(not t.valueless()) {
 			const auto self{co_await get_identity};
 
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
@@ -1159,16 +1167,15 @@ namespace lazy {
 	template<template<typename> typename Wrapper, typename Result>
 	struct [[nodiscard]] root<Wrapper<Result>> final {
 		//TODO: [[deprecated]]
-		root(Wrapper<Result> w) /*TODO: [C++26] pre(not w.valueless())*/ : root{log_level::trace, std::move(w)} {}
+		root(Wrapper<Result> w) pre(not w.valueless()) : root{log_level::trace, std::move(w)} {}
 
-		root(log_level level, Wrapper<Result> w) /*TODO: [C++26] pre(not w.valueless())*/ : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
+		root(log_level level, Wrapper<Result> w) pre(not w.valueless()) : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
 
 		auto valueless() const noexcept -> bool {
-			if(ptr) return false;
-			else {
-				//TODO: [C++26] contract_assert(ptr->handle);
-				return true;
-			}
+			if(ptr) {
+				contract_assert(ptr->handle);
+				return false;
+			} else return true;
 		}
 
 		//! @returns the id of this coroutine stack, or a default-constructed id, if @c this is @c valueless
@@ -1177,26 +1184,26 @@ namespace lazy {
 			else return ptr->rd.get_id();
 		}
 
-		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return ptr->timer.elapsed(); }
+		auto elapsed() const -> duration pre(not valueless()) { return ptr->timer.elapsed(); }
 
-		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return ptr->log.messages; }
+		auto log() const -> std::span<const log_message> pre(not valueless()) { return ptr->log.messages; }
 
-		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return ptr->handle.done(); }
+		auto done() const -> bool pre(not valueless()) { return ptr->handle.done(); }
 
-		auto wait() -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_with([]() noexcept { return false; }); }
+		auto wait() -> state pre(not valueless()) { return wait_with([]() noexcept { return false; }); }
 
 		template<typename Rep, typename Period>
-		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state /*TODO: [C++26] pre(not valueless())*/ { return wait_until(clock::now() + duration); }
+		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state pre(not valueless()) { return wait_until(clock::now() + duration); }
 
 		template<typename Clock, typename Duration>
-		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state /*TODO: [C++26] pre(not valueless())*/ {
+		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state pre(not valueless()) {
 			static_assert(compat::is_clock_v<Clock>);
 			return wait_with([&]() noexcept { return Clock::now() >= time; });
 		}
 
 		auto wait_with(
 			compat::function_ref<bool() const noexcept> suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
-		) -> state /*TODO: [C++26] pre(not valueless())*/ {
+		) -> state pre(not valueless()) {
 			if(done()) return state::done;
 			auto & rd{ptr->rd};
 			rd.suspend = suspend;
@@ -1205,14 +1212,14 @@ namespace lazy {
 			timer.start();
 			{
 				const struct guard { timer_t & timer; ~guard() noexcept { timer.stop(); } } g{timer}; //defer...
-				//TODO: [C++26] contract_assert(data.top and not data.top.done());
+				contract_assert(rd.top and not rd.top.done());
 				rd.top.resume();
 			}
 			if(done()) return state::done;
 			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
 		}
 
-		auto result() requires(not std::is_void_v<Result>) /*TODO: [C++26] pre(not valueless())*/ {
+		auto result() requires(not std::is_void_v<Result>) pre(not valueless()) {
 			if(const auto p{reinterpret_cast<Result *>(ptr->rd.suspension_state.result())}) return compat::optional_ref<Result>{*p};
 			return compat::optional_ref<Result>{};
 		}
@@ -1224,9 +1231,9 @@ namespace lazy {
 			static
 			auto now() noexcept -> clock::time_point { return clock::now(); }
 		public:
-			void start() /*TODO: [C++26] post(last_resume)*/ { last_resume = now(); }
+			void start() post(last_resume) { last_resume = now(); }
 
-			void stop() /*TODO: [C++26] pre(last_resume) post(not last_resume)*/ {
+			void stop() pre(last_resume) post(not last_resume) {
 				elapsed_ += (now() - *last_resume);
 				last_resume.reset();
 			}
@@ -1246,7 +1253,7 @@ namespace lazy {
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
-			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : log{.level = level}, rd{*this}, handle{std::move(h)} {
+			data(log_level level, handle_t h) pre(h and not h.done()) : log{.level = level}, rd{*this}, handle{std::move(h)} {
 				rd.top = handle;
 				auto & p{handle.promise()};
 				p.data.set_root(rd);
