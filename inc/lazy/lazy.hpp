@@ -10,6 +10,7 @@
 #include <chrono>
 #include <format>
 #include <memory>
+#include <ranges>
 #include <vector>
 #include <cstdint>
 #include <cstring>
@@ -783,17 +784,22 @@ namespace lazy {
 			static_assert((is_task_v<Ts> and ...));
 			using tmp0 = std::tuple<task_result_t<Ts>...>;
 			using tmp1 = tuple_erase_void_type<tmp0>;
-			using tmp2 = decltype(std::tuple_cat(std::declval<tmp1>(), std::declval<std::tuple<void>>())); //append void so that tuple_size_v<tmp2> is at least 1
+			using tmp2 = decltype(std::tuple_cat(std::declval<tmp1>(), std::declval<std::tuple<void>>())); //! @note append void so that @c tuple_size_v<tmp2> is at least 1
 			using tmp3 = std::tuple_element_t<0, tmp2>;
 		public:
 			using type = std::conditional_t<(std::tuple_size_v<tmp1> > 1), tmp1, tmp3>;
 		};
 
-		template<typename T>
-		struct compute_fork_result<std::vector<task<T>>> { using type = std::vector<T>; };
-
-		template<>
-		struct compute_fork_result<std::vector<task<void>>> { using type = void; };
+		template<std::ranges::range T>
+		struct compute_fork_result<T> {
+		private:
+			using tmp0 = std::ranges::range_value_t<T>;
+			static_assert(is_task_v<tmp0>);
+			using tmp1 = task_result_t<tmp0>;
+			using tmp2 = std::conditional_t<std::is_void_v<tmp1>, int, tmp1>; //! @note prevent @c vector<void> from being constructed
+		public:
+			using type = std::conditional_t<std::is_void_v<tmp1>, void, std::vector<tmp2>>;
+		};
 
 		template<typename... Ts>
 		using compute_fork_result_t = typename compute_fork_result<Ts...>::type;
@@ -883,8 +889,9 @@ namespace lazy {
 	//! @brief execute multiple @c tasks in parallel
 	//! @returns a @c task managing the wrapped @c tasks, returning their results if any
 	//! @note the return type of the returned @c task is: @c void if @code{.cpp} T == void @endcode, else @c std::vector<T>
-	template<typename Alloc, typename T>
-	auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
+	template<typename Alloc, std::ranges::forward_range Tasks>
+	requires internal::is_task_v<std::ranges::range_value_t<Tasks>>
+	auto fork(std::allocator_arg_t, Alloc, Tasks tasks) -> task<internal::compute_fork_result_t<Tasks>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
 		const auto & root{co_await internal::get_root_awaiter{}};
 
 		std::atomic<bool> error{false};
@@ -902,7 +909,7 @@ namespace lazy {
 				case state::suspended: co_yield progress; break;
 				case state::blocked: co_yield blocked; break;
 				case state::done: {
-					using Result = internal::compute_fork_result_t<std::vector<task<T>>>; //TODO: use allocator here?
+					using Result = internal::compute_fork_result_t<Tasks>; //TODO: use allocator here?
 					if constexpr(std::is_void_v<Result>) co_return;
 					else co_return tasks | std::views::transform([](auto & task) { return std::move(task.handle.promise().get_result()); }) | std::ranges::to<std::vector>();
 				}
@@ -910,8 +917,9 @@ namespace lazy {
 		}
 	}
 
-	template<typename T>
-	auto fork(std::vector<task<T>> tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
+	template<std::ranges::forward_range Tasks>
+	requires internal::is_task_v<std::ranges::range_value_t<Tasks>>
+	auto fork(Tasks tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
 
 	//! @brief create multiple @c tasks and execute them in parallel
 	//! @tparam N count of @c tasks to create
@@ -958,9 +966,10 @@ namespace lazy {
 		friend
 		auto fork(std::allocator_arg_t, Alloc, Tasks...) -> task<internal::compute_fork_result_t<Tasks...>>;
 
-		template<typename Alloc, typename T>
+		template<typename Alloc, std::ranges::forward_range Tasks>
+		requires internal::is_task_v<std::ranges::range_value_t<Tasks>>
 		friend
-		auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>>;
+		auto fork(std::allocator_arg_t, Alloc, Tasks) -> task<internal::compute_fork_result_t<Tasks>>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
