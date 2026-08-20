@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <concepts>
 #include <optional>
 #include <coroutine>
 #include <functional>
