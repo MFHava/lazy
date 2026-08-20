@@ -319,6 +319,10 @@ namespace lazy {
 			} * vptr;
 			void * self;
 		public:
+			auto elapsed() const noexcept -> duration { return vptr->elapsed(self); }
+			auto is_tracing() const noexcept -> bool { return vptr->is_tracing(self); }
+			auto add_log_message(std::source_location loc, log_level log, compat::function_ref<std::string()> msg) { vptr->add_log_message(self, loc, log, msg); }
+
 			template<typename T>
 			root_data(T && obj) : self{std::addressof(obj)} {
 				using U = std::remove_reference_t<T>;
@@ -334,35 +338,30 @@ namespace lazy {
 			}
 
 			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
-			auto elapsed() const noexcept -> duration { return vptr->elapsed(self); }
-			auto is_tracing() const noexcept -> bool { return vptr->is_tracing(self); }
-			auto add_log_message(std::source_location loc, log_level log, compat::function_ref<std::string()> msg) { vptr->add_log_message(self, loc, log, msg); }
 
 			std::coroutine_handle<> top;
 			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
+		private:
+			//! @attention tagged "union"
+			//! LSB set => suspended due to being blocked
+			//! else:
+			//!   if equal to 0 => suspended without value
+			//!   else => pointer to last result available to root
+			std::uintptr_t data;
+		public:
+			void reset_state() noexcept { data = 0; }
 
-			class {
-				//! @attention tagged "union"
-				//! LSB set => suspended due to being blocked
-				//! else:
-				//!   if equal to 0 => suspended without value
-				//!   else => pointer to last result available to root
-				std::uintptr_t data;
-			public:
-				void reset() noexcept { data = 0; }
+			void set_result(void * ptr) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(ptr); }
+			void set_blocked() pre(data == 0) { data = 1U; }
 
-				void set_result(void * ptr) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(ptr); }
-				void set_blocked() pre(data == 0) { data = 1U; }
-
-				auto result() const noexcept -> void * {
-					if(blocked()) return nullptr;
-					return reinterpret_cast<void *>(data);
-				}
-				auto blocked() const noexcept -> bool { return data & 1U; }
-			} suspension_state;
+			auto result() const noexcept -> void * {
+				if(blocked()) return nullptr;
+				return reinterpret_cast<void *>(data);
+			}
+			auto blocked() const noexcept -> bool { return data & 1U; }
 		};
 
-		struct promise_base;
+		class promise_base;
 
 		struct nested_info final {
 			std::exception_ptr eptr;        //needed for manual stack unwinding
@@ -370,27 +369,25 @@ namespace lazy {
 			promise_base * root;            //bottom of implicit coroutine-"stack"
 		};
 
-		struct promise_base {
-			class {
-				//! @attention tagged "union"
-				//! LSB set => nested_info *
-				//! LSB + 1 set => root_data * (=> this promise is at bottom of "stack")
-				//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
-				std::uintptr_t data;
-			public:
-				void set_nested(nested_info & nested) { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
-				void set_top(std::coroutine_handle<> handle) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
-				void set_root(root_data & rd) { data = reinterpret_cast<std::uintptr_t>(std::addressof(rd)) | 2U; }
+		class promise_base {
+			//! @attention tagged "union"
+			//! LSB set => nested_info *
+			//! LSB + 1 set => root_data * (=> this promise is at bottom of "stack")
+			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
+			std::uintptr_t data;
+		public:
+			void set_nested(nested_info & nested) { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
+			void set_top(std::coroutine_handle<> handle) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
+			void set_root(root_data & rd) { data = reinterpret_cast<std::uintptr_t>(std::addressof(rd)) | 2U; }
 
-				auto get_nested() const -> nested_info * pre(not (data & 2U)) { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
-				auto get_top() const -> std::coroutine_handle<> pre(not (data & 3U)) { return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data)); }
-				auto get_root() const -> root_data & pre(not (data & 1U) and (data & 2U)) { return *reinterpret_cast<root_data *>(data ^ 2U); }
+			auto get_nested() const -> nested_info * pre(not (data & 2U)) { return (data & 1U) ? reinterpret_cast<nested_info *>(data ^ 1U) : nullptr; }
+			auto get_top() const -> std::coroutine_handle<> pre(not (data & 3U)) { return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data)); }
+			auto get_root() const -> root_data & pre(not (data & 1U) and (data & 2U)) { return *reinterpret_cast<root_data *>(data ^ 2U); }
 
-				auto find_root() const -> root_data & {
-					if(auto nested{get_nested()}) return nested->root->data.get_root();
-					else return get_root();
-				}
-			} data;
+			auto find_root() const -> root_data & {
+				if(auto nested{get_nested()}) return nested->root->get_root();
+				else return get_root();
+			}
 
 			//TODO: [C++26] generate get_return_object() with deducing this and reflection
 
@@ -400,8 +397,8 @@ namespace lazy {
 			struct pop_awaiter final : std::suspend_always {
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					if(const auto nested{self.promise().data.get_nested()}) {
-						auto & rd{nested->root->data.get_root()};
+					if(const auto nested{self.promise().get_nested()}) {
+						auto & rd{nested->root->get_root()};
 						rd.top = nested->parent;
 						if(not rd.suspend()) return rd.top;
 					}
@@ -413,10 +410,10 @@ namespace lazy {
 			auto final_suspend() noexcept { return pop_awaiter{}; }
 
 			void unhandled_exception(std::source_location loc = std::source_location::current()) {
-				if(auto n{data.get_nested()}) n->eptr = std::current_exception();
+				if(auto n{get_nested()}) n->eptr = std::current_exception();
 				else {
 					//! @note loc will not identify the actual throw-site, due to the coroutine body transformation
-					auto & rd{data.get_root()};
+					auto & rd{get_root()};
 					try { throw; }
 					catch(const std::exception & exc) { rd.add_log_message(loc, log_level::fatal, [&] { return std::string{exc.what()}; }); }
 					catch(...) { rd.add_log_message(loc, log_level::fatal, [] { return std::string{"unknown error"}; }); }
@@ -435,11 +432,11 @@ namespace lazy {
 
 				template<typename Promise>
 				auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> std::coroutine_handle<> {
-					other.promise().data.set_nested(n);
+					other.promise().set_nested(n);
 					n.parent = self;
-					auto nested{self.promise().data.get_nested()};
+					auto nested{self.promise().get_nested()};
 					n.root = nested ? nested->root : std::addressof(self.promise());
-					auto & rd{n.root->data.get_root()};
+					auto & rd{n.root->get_root()};
 					rd.top = other;
 					if constexpr(Timed) elapsed = rd.elapsed();
 					if(rd.suspend()) return std::noop_coroutine();
@@ -449,7 +446,7 @@ namespace lazy {
 				auto await_resume() pre(other.done()) {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 					if constexpr(Timed) {
-						auto & rd{n.root->data.get_root()};
+						auto & rd{n.root->get_root()};
 						elapsed = rd.elapsed() - elapsed;
 					}
 
@@ -480,8 +477,8 @@ namespace lazy {
 
 			template<typename Self, typename T>
 			requires std::same_as<Self, typename generator<T>::promise_type>
-			auto yield_value(this Self & self, elements_of<T> other) pre(not other.g.valueless() and not other.g.handle.promise().yield_target) {
-				other.g.handle.promise().yield_target = self.yield_target;
+			auto yield_value(this Self & self, elements_of<T> other) pre(not other.g.valueless() and not other.g.handle.promise()) {
+				other.g.handle.promise() = self;
 				return push<false>(std::move(other.g.handle));
 			}
 
@@ -578,7 +575,7 @@ namespace lazy {
 			void return_value(U && value) {
 				new(std::addressof(result)) T(std::forward<U>(value));
 				initialized = true;
-				if(update_suspension_state) this->data.get_root().suspension_state.set_result(std::addressof(result));
+				if(update_suspension_state) this->get_root().set_result(std::addressof(result));
 			}
 
 			auto get_result() -> T & pre(initialized) { return result; }
@@ -592,12 +589,12 @@ namespace lazy {
 
 		struct progress_t final : yield_base {
 			template<typename Promise>
-			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().data.find_root().suspend(); }
+			auto await_suspend(std::coroutine_handle<Promise> self) const noexcept { return self.promise().find_root().suspend(); }
 		};
 
 		struct blocked_t final : yield_base {
 			template<typename Promise>
-			void await_suspend(std::coroutine_handle<Promise> self) const noexcept { self.promise().data.find_root().suspension_state.set_blocked(); }
+			void await_suspend(std::coroutine_handle<Promise> self) const noexcept { self.promise().find_root().set_blocked(); }
 		};
 
 		class get_identity_t final : public await_base {
@@ -605,7 +602,7 @@ namespace lazy {
 		public:
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
-				const auto & rd{self.promise().data.find_root()};
+				const auto & rd{self.promise().find_root()};
 				result = rd.get_id();
 				return rd.suspend();
 			}
@@ -617,7 +614,7 @@ namespace lazy {
 		public:
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
-				const auto & rd{self.promise().data.find_root()};
+				const auto & rd{self.promise().find_root()};
 				result = rd.is_tracing();
 				return rd.suspend();
 			}
@@ -635,7 +632,7 @@ namespace lazy {
 
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) const -> bool {
-				auto & rd{self.promise().data.find_root()};
+				auto & rd{self.promise().find_root()};
 				rd.add_log_message(loc, level, [&] { return std::vformat(fmt, args); });
 				return rd.suspend();
 			}
@@ -710,7 +707,7 @@ namespace lazy {
 
 		template<typename Promise>
 		auto await_suspend(std::coroutine_handle<Promise> self) const {
-			auto & rd{self.promise().data.find_root()};
+			auto & rd{self.promise().find_root()};
 			rd.add_log_message(loc, log_level::trace, [&] {
 				std::string msg{file_name};
 				msg += '\0';
@@ -805,7 +802,7 @@ namespace lazy {
 		public:
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) -> bool {
-				result = std::addressof(self.promise().data.find_root());
+				result = std::addressof(self.promise().find_root());
 				return false;
 			}
 			auto await_resume() const noexcept -> const root_data & { return *result; }
@@ -823,11 +820,11 @@ namespace lazy {
 
 			compat::parallel_for_each(datas, [&](auto & data) {
 				if(data.bottom.done()) return;
-				data.rd.suspension_state.reset();
+				data.rd.reset_state();
 				try { data.rd.top.resume(); }
 				catch(...) { if(auto expected{false}; error.compare_exchange_strong(expected, true)) eptr = std::current_exception(); }
 				if(data.bottom.done()) return;
-				if(data.rd.suspension_state.blocked()) is_blocked = true;
+				if(data.rd.blocked()) is_blocked = true;
 				else is_suspended = true;
 			});
 
@@ -861,7 +858,7 @@ namespace lazy {
 		[&]<auto... I>(std::index_sequence<I...>) {
 			[[maybe_unused]] const int dummy0[]{((datas[I].rd.suspend = compat::function_ref<bool() const noexcept>{suspend}), 0)...};
 			[[maybe_unused]] const int dummy1[]{((datas[I].rd.top = datas[I].bottom), 0)...};
-			[[maybe_unused]] const int dummy2[]{((std::get<I>(handles).promise().data.set_root(datas[I].rd)), 0)...};
+			[[maybe_unused]] const int dummy2[]{((std::get<I>(handles).promise().set_root(datas[I].rd)), 0)...};
 		}(std::index_sequence_for<Tasks...>{});
 
 		for(;;) {
@@ -896,7 +893,7 @@ namespace lazy {
 		for(auto && [task, data] : std::views::zip(tasks, datas)) {
 			data.rd.suspend = compat::function_ref<bool() const noexcept>{suspend};
 			data.rd.top = data.bottom;
-			task.handle.promise().data.set_root(data.rd);
+			task.handle.promise().set_root(data.rd);
 		}
 
 		for(;;) {
@@ -943,7 +940,7 @@ namespace lazy {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
 
 		struct promise_type final : internal::task_promise<Result> {
-			promise_type() { this->data.set_top(std::coroutine_handle<promise_type>::from_promise(*this)); }
+			promise_type() { this->set_top(std::coroutine_handle<promise_type>::from_promise(*this)); }
 
 			auto get_return_object() noexcept { return task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 		};
@@ -979,24 +976,22 @@ namespace lazy {
 	struct [[nodiscard]] generator final {
 		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
 
-		struct promise_type final : internal::promise_base {
+		class promise_type final : public internal::promise_base {
+			//! @attention tagged "union"
+			//! LSB set => yielding to @c root<generator> => must update @c root_data.ptr and suspend
+			//! else: address of coroutine_handle to yield to (must update @c ptr)
+			std::uintptr_t cont{0};
+		public:
+			void set_update_suspension_state() pre(cont == 0) { cont = 1U; }
+			void set_continuation(std::coroutine_handle<> handle) pre(cont == 0) { cont = reinterpret_cast<std::uintptr_t>(handle.address()); }
+			auto get_continuation() const -> std::coroutine_handle<> pre(cont != 0) {
+				if(cont & 1U) return {};
+				return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(cont));
+			}
+
 			Result * ptr;
-			class {
-				//! @attention tagged "union"
-				//! LSB set => yielding to @c root<generator> => must update @c root_data.ptr and suspend
-				//! else: address of coroutine_handle to yield to (must update @c ptr)
-				std::uintptr_t data{0};
-			public:
-				void set_update_suspension_state() pre(data == 0) { data = 1U; }
-				void set_continuation(std::coroutine_handle<> handle) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(handle.address()); }
 
-				auto get() const -> std::coroutine_handle<> pre(data != 0) {
-					if(data & 1U) return {};
-					return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(data));
-				}
-			} yield_target;
-
-			promise_type() { this->data.set_top(std::coroutine_handle<promise_type>::from_promise(*this)); }
+			promise_type() { this->set_top(std::coroutine_handle<promise_type>::from_promise(*this)); }
 
 			auto get_return_object() noexcept { return generator{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
@@ -1009,12 +1004,12 @@ namespace lazy {
 					//! @note does not check for suspension, as we need to jump back to @c yield_target
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
 						auto & promise{self.promise()};
-						if(const auto cont{promise.yield_target.get()}) {
+						if(const auto cont{promise.get_continuation()}) {
 							contract_assert(not cont.done());
 							promise.ptr = std::addressof(val);
 							return cont;
 						} else {
-							promise.data.find_root().suspension_state.set_result(std::addressof(val));
+							promise.find_root().set_result(std::addressof(val));
 							return std::noop_coroutine();
 						}
 					}
@@ -1030,12 +1025,12 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<>) const noexcept { return continuation; }
 				};
 
-				if(const auto cont{yield_target.get()}) {
+				if(const auto cont{get_continuation()}) {
 					contract_assert(not cont.done());
 					ptr = std::addressof(val);
 					return awaiter{{}, cont};
 				} else {
-					data.find_root().suspension_state.set_result(std::addressof(val));
+					find_root().set_result(std::addressof(val));
 					return awaiter{{}, std::noop_coroutine()};
 				}
 			}
@@ -1051,7 +1046,7 @@ namespace lazy {
 
 			auto operator*() const -> Result && pre(handle and not handle.done()) {
 				auto & promise{handle.promise()};
-				auto top{std::coroutine_handle<promise_type>::from_address(promise.data.get_top().address())};
+				auto top{std::coroutine_handle<promise_type>::from_address(promise.get_top().address())};
 				return static_cast<Result &&>(*top.promise().ptr);
 			}
 
@@ -1086,19 +1081,19 @@ namespace lazy {
 				contract_assert(not (it_promise.data & 1U));
 
 				//! @attention connect @c it 's @c co_yield with current coroutine frame
-				if constexpr(Initial) it_promise.yield_target.set_continuation(self);
-				else contract_assert(it_promise.yield_target.get() == self);
+				if constexpr(Initial) it_promise.set_continuation(self);
+				else contract_assert(it_promise.get_continuation() == self);
 
 				//! @attention store enough context to remove @c it from stack on resumption (as @c generator is not permanently on top of stack)
 				prev_top = n.parent = self;
 
 				//! @attention push @c it onto stack
-				const auto & nested{self.promise().data.get_nested()};
+				const auto & nested{self.promise().get_nested()};
 				n.root = nested ? nested->root : std::addressof(self.promise());
 
-				auto & rd{n.root->data.get_root()};
-				rd.top = it_promise.data.get_top();
-				it_promise.data.set_nested(n);
+				auto & rd{n.root->get_root()};
+				rd.top = it_promise.get_top();
+				it_promise.set_nested(n);
 
 				if(rd.suspend()) return std::noop_coroutine();
 				else return rd.top;
@@ -1108,9 +1103,9 @@ namespace lazy {
 				//! @note must be checked first, because if we got here via an unhandled exception, there is nothing to do aprdt from rethrowing
 				if(n.eptr) std::rethrow_exception(n.eptr);
 
-				auto & rd{n.root->data.get_root()};
+				auto & rd{n.root->get_root()};
 				//! @attention @c it_promise.top won't be up to date, need to get actual top from @c *top so we can resume the correct coroutine on the next iteration
-				it.handle.promise().data.set_top(rd.top);
+				it.handle.promise().set_top(rd.top);
 				//! @attention pop @c it from stack by restoring the @c top we had on @c await_suspend
 				rd.top = prev_top;
 
@@ -1207,7 +1202,7 @@ namespace lazy {
 			if(done()) return state::done;
 			auto & rd{ptr->rd};
 			rd.suspend = suspend;
-			rd.suspension_state.reset();
+			rd.reset_state();
 			auto & timer{ptr->timer};
 			timer.start();
 			{
@@ -1216,11 +1211,11 @@ namespace lazy {
 				rd.top.resume();
 			}
 			if(done()) return state::done;
-			return rd.suspension_state.blocked() ? state::blocked : state::suspended;
+			return rd.blocked() ? state::blocked : state::suspended;
 		}
 
 		auto result() requires(not std::is_void_v<Result>) pre(not valueless()) {
-			if(const auto p{reinterpret_cast<Result *>(ptr->rd.suspension_state.result())}) return compat::optional_ref<Result>{*p};
+			if(const auto p{reinterpret_cast<Result *>(ptr->rd.result())}) return compat::optional_ref<Result>{*p};
 			return compat::optional_ref<Result>{};
 		}
 	private:
@@ -1256,8 +1251,8 @@ namespace lazy {
 			data(log_level level, handle_t h) pre(h and not h.done()) : log{.level = level}, rd{*this}, handle{std::move(h)} {
 				rd.top = handle;
 				auto & p{handle.promise()};
-				p.data.set_root(rd);
-				if constexpr(requires{ p.yield_target; }) p.yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
+				p.set_root(rd);
+				if constexpr(requires{ p.set_update_suspension_state(); }) p.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
 				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
 			}
 
