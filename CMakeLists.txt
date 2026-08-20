@@ -34,6 +34,11 @@ add_library(lazy INTERFACE)
 			/bigobj # use "big object files" to circumvent class of errors that are related to heavy template or machine generated code
 		)
 	endif()
+	if(UNIX)
+		find_package(TBB REQUIRED)
+
+		target_link_libraries(lazy INTERFACE TBB::tbb)
+	endif()
 
 find_package(Catch2 3 REQUIRED)
 

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <format>
 #include <memory>
+#include <vector>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -167,6 +168,28 @@ namespace lazy::compat {
 	using function_ref = std::function_ref<Signature>;
 #endif
 }
+#if defined(__cpp_lib_execution) and defined(__cpp_lib_parallel_algorithm)
+	#include <execution>
+	#include <algorithm>
+
+	namespace lazy::compat {
+		template<typename R, typename Func>
+		void parallel_for_each(R && range, Func func) noexcept {
+			//TODO: [C++26] use std::ranges::for_each(std::execution::par, tasks
+			std::for_each(std::execution::par, std::begin(range), std::end(range), func);
+		}
+	}
+#else
+	#warning std::execution or parallel algorithms are not supported by your implementation, using TBB as transitional solution.
+	#include <oneapi/tbb/parallel_for_each.h>
+
+	namespace lazy::compat {
+		template<typename R, typename Func>
+		void parallel_for_each(R && range, Func func) noexcept {
+			oneapi::tbb::parallel_for_each(std::begin(range), std::end(range), func);
+		}
+	}
+#endif
 
 namespace lazy {
 	using clock = std::chrono::steady_clock;
@@ -293,10 +316,10 @@ namespace lazy {
 				using U = std::remove_reference_t<T>;
 				static constexpr vtable vtable{
 					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->timer.elapsed(); },
-					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
+					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->log.level == log_level::trace; },
 					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
 						auto ptr{reinterpret_cast<U *>(self)};
-						if(ptr->level <= log) ptr->log.emplace_back(loc, log, msg());
+						if(ptr->log.level <= log) ptr->log.messages.emplace_back(loc, log, msg());
 					}
 				};
 				vptr = &vtable;
@@ -700,6 +723,209 @@ namespace lazy {
 	template<typename Wrapper>
 	root(log_level, Wrapper) -> root<Wrapper>;
 
+	//! @brief state of coroutine stack when waiting ends
+	enum class state {
+		done,      //!< execution completed, @c task result may be ready
+		suspended, //!< suspended due to timeout or user request, @c generator result may be ready
+		blocked,   //!< suspended due to synchronization primitive
+	};
+
+	namespace internal {
+		template<typename>
+		inline
+		constexpr
+		bool is_task_v{false};
+
+		template<typename T>
+		inline
+		constexpr
+		bool is_task_v<task<T>>{true};
+
+		template<typename>
+		struct task_result;
+
+		template<typename T>
+		using task_result_t = typename task_result<T>::type;
+
+		template<typename T>
+		struct task_result<task<T>> { using type = T; };
+
+		template<typename From, typename To, typename Indices, std::size_t Index>
+		struct tuple_erase_void;
+
+		template<typename To, typename Is, std::size_t I>
+		struct tuple_erase_void<std::tuple<>, To, Is, I> {
+			using type = To;
+			using indices = Is;
+		};
+
+		template<typename... From, typename... To, std::size_t... Is, std::size_t I>
+		struct tuple_erase_void<std::tuple<void, From...>, std::tuple<To...>, std::index_sequence<Is...>, I> : tuple_erase_void<std::tuple<From...>, std::tuple<To...>, std::index_sequence<Is...>, I + 1> {};
+
+		template<typename T, typename... From, typename... To, std::size_t... Is, std::size_t I>
+		struct tuple_erase_void<std::tuple<T, From...>, std::tuple<To...>, std::index_sequence<Is...>, I> : tuple_erase_void<std::tuple<From...>, std::tuple<To..., T>, std::index_sequence<Is..., I>, I + 1> {};
+
+		template<typename From>
+		using tuple_erase_void_type = typename tuple_erase_void<From, std::tuple<>, std::index_sequence<>, 0>::type;
+
+		template<typename From>
+		using tuple_erase_void_indices = typename tuple_erase_void<From, std::tuple<>, std::index_sequence<>, 0>::indices;
+
+		template<typename... Ts>
+		struct compute_fork_result {
+		private:
+			static_assert((is_task_v<Ts> and ...));
+			using tmp0 = std::tuple<task_result_t<Ts>...>;
+			using tmp1 = tuple_erase_void_type<tmp0>;
+			using tmp2 = decltype(std::tuple_cat(std::declval<tmp1>(), std::declval<std::tuple<void>>())); //append void so that tuple_size_v<tmp2> is at least 1
+			using tmp3 = std::tuple_element_t<0, tmp2>;
+		public:
+			using type = std::conditional_t<(std::tuple_size_v<tmp1> > 1), tmp1, tmp3>;
+		};
+
+		template<typename T>
+		struct compute_fork_result<std::vector<task<T>>> { using type = std::vector<T>; };
+
+		template<>
+		struct compute_fork_result<std::vector<task<void>>> { using type = void; };
+
+		template<typename... Ts>
+		using compute_fork_result_t = typename compute_fork_result<Ts...>::type;
+
+		class get_root_awaiter final : public await_base {
+			const root_data * result;
+		public:
+			template<typename Promise>
+			auto await_suspend(std::coroutine_handle<Promise> self) -> bool {
+				result = std::addressof(self.promise().data.find_root());
+				return false;
+			}
+			auto await_resume() const noexcept -> const root_data & { return *result; }
+		};
+
+		struct fork_data final {
+			std::coroutine_handle<> bottom;
+			root_data rd;
+		};
+
+		inline
+		auto run_fork(std::atomic<bool> & error, std::span<fork_data> datas) {
+			std::atomic<bool> is_blocked{false}, is_suspended{false};
+			std::exception_ptr eptr; //! @note concurrent access guarded by @c error
+
+			compat::parallel_for_each(datas, [&](auto & data) {
+				if(data.bottom.done()) return;
+				data.rd.suspension_state.reset();
+				try { data.rd.top.resume(); }
+				catch(...) { if(auto expected{false}; error.compare_exchange_strong(expected, true)) eptr = std::current_exception(); }
+				if(data.bottom.done()) return;
+				if(data.rd.suspension_state.blocked()) is_blocked = true;
+				else is_suspended = true;
+			});
+
+			if(error) {
+				//TODO: [C++26] contract_assert(eptr);
+				std::rethrow_exception(eptr);
+			}
+
+			if(not is_blocked and not is_suspended) return state::done; //! @ note all tasks are done
+			else if(is_blocked and not is_suspended) return state::blocked;
+			else return state::suspended;
+		}
+	}
+
+	//! @brief execute multiple @c tasks in parallel
+	//! @returns a @c task managing the wrapped @c tasks, returning their results if any
+	//! @note the return type of the returned @c task is:
+	//! * @c void if all wrapped tasks are @c task<void>
+	//! * @c T if one wrapped task is @c task<T> and all other tasks are @c task<void>
+	//! * @c tuple<U...>, where @c U... is the list of types @c W... from @c task<W...> with all instances of @c void removed
+	template<typename Alloc, typename... Tasks>
+	requires(sizeof...(Tasks) >= 2 and (internal::is_task_v<Tasks> and ...))
+	auto fork(std::allocator_arg_t, Alloc, Tasks... tasks) -> task<internal::compute_fork_result_t<Tasks...>> /*TODO: [C++26] pre((not tasks.valueless()) and ...)*/ {
+		const auto & root{co_await internal::get_root_awaiter{}};
+
+		std::atomic<bool> error{false};
+		const auto suspend{[&] noexcept { return error ? true : root.suspend(); }};
+
+		const auto handles{std::make_tuple(std::ref(tasks.handle)...)};
+		std::array<internal::fork_data, sizeof...(Tasks)> datas{internal::fork_data{tasks.handle, root}...};
+		[&]<auto... I>(std::index_sequence<I...>) {
+			[[maybe_unused]] const int dummy0[]{((datas[I].rd.suspend = compat::function_ref<bool() const noexcept>{suspend}), 0)...};
+			[[maybe_unused]] const int dummy1[]{((datas[I].rd.top = datas[I].bottom), 0)...};
+			[[maybe_unused]] const int dummy2[]{((std::get<I>(handles).promise().data.set_root(datas[I].rd)), 0)...};
+		}(std::index_sequence_for<Tasks...>{});
+
+		for(;;) {
+			switch(internal::run_fork(error, datas)) {
+				case state::suspended: co_yield progress; break;
+				case state::blocked: co_yield blocked; break;
+				case state::done: {
+					using Indices = internal::tuple_erase_void_indices<std::tuple<internal::task_result_t<Tasks>...>>;
+					if constexpr(Indices::size() == 0) co_return;
+					else if constexpr(Indices::size() == 1) co_return [&]<auto I>(std::index_sequence<I>) { return std::move(std::get<I>(handles).promise().get_result()); }(Indices{});
+					else co_return [&]<auto... I>(std::index_sequence<I...>) { return std::make_tuple(std::move(std::get<I>(handles).promise().get_result())...); }(Indices{});
+				}
+			}
+		}
+	}
+
+	template<typename... Tasks>
+	requires(sizeof...(Tasks) >= 2 and (internal::is_task_v<Tasks> and ...))
+	auto fork(Tasks... tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)...); }
+
+	//! @brief execute multiple @c tasks in parallel
+	//! @returns a @c task managing the wrapped @c tasks, returning their results if any
+	//! @note the return type of the returned @c task is: @c void if @code{.cpp} T == void @endcode, else @c std::vector<T>
+	template<typename Alloc, typename T>
+	auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>> /*TODO: [C++26] pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); }))*/ {
+		const auto & root{co_await internal::get_root_awaiter{}};
+
+		std::atomic<bool> error{false};
+		const auto suspend{[&] noexcept { return error ? true : root.suspend(); }};
+
+		auto datas{tasks | std::views::transform([&](const auto & task) { return internal::fork_data{task.handle, root}; }) | std::ranges::to<std::vector>()}; //TODO: use allocator here?
+		for(auto && [task, data] : std::views::zip(tasks, datas)) {
+			data.rd.suspend = compat::function_ref<bool() const noexcept>{suspend};
+			data.rd.top = data.bottom;
+			task.handle.promise().data.set_root(data.rd);
+		}
+
+		for(;;) {
+			switch(internal::run_fork(error, datas)) {
+				case state::suspended: co_yield progress; break;
+				case state::blocked: co_yield blocked; break;
+				case state::done: {
+					using Result = internal::compute_fork_result_t<std::vector<task<T>>>; //TODO: use allocator here?
+					if constexpr(std::is_void_v<Result>) co_return;
+					else co_return tasks | std::views::transform([](auto & task) { return std::move(task.handle.promise().get_result()); }) | std::ranges::to<std::vector>();
+				}
+			}
+		}
+	}
+
+	template<typename T>
+	auto fork(std::vector<task<T>> tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
+
+	//! @brief create multiple @c tasks and execute them in parallel
+	//! @tparam N count of @c tasks to create
+	//! @tparam F factory for @c tasks, invoked with @c 0..N to create the dedicated @c tasks
+	template<std::size_t N, typename Alloc, std::regular_invocable<std::allocator_arg_t, Alloc, std::size_t> F>
+	requires(N >= 2 and internal::is_task_v<std::invoke_result_t<F, std::allocator_arg_t, Alloc, std::size_t>>)
+	auto fork(std::allocator_arg_t, Alloc alloc, F f) {
+		return [&]<auto... I>(std::index_sequence<I...>) {
+			return fork(std::allocator_arg, alloc, std::invoke(f, std::allocator_arg, alloc, I)...);
+		}(std::make_index_sequence<N>{});
+	}
+
+	template<std::size_t N, std::regular_invocable<std::size_t> F>
+	requires(N >= 2 and internal::is_task_v<std::invoke_result_t<F, std::size_t>>)
+	auto fork(F f) {
+		return [&]<auto... I>(std::index_sequence<I...>) {
+			return fork(std::invoke(f, I)...);
+		}(std::make_index_sequence<N>{});
+	}
+
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
 	//! additional supported coroutine statements:
@@ -720,6 +946,15 @@ namespace lazy {
 		internal::promise_base;
 		friend
 		root<task>;
+
+		template<typename Alloc, typename... Tasks>
+		requires(sizeof...(Tasks) >= 2 and (internal::is_task_v<Tasks> and ...))
+		friend
+		auto fork(std::allocator_arg_t, Alloc, Tasks...) -> task<internal::compute_fork_result_t<Tasks...>>;
+
+		template<typename Alloc, typename T>
+		friend
+		auto fork(std::allocator_arg_t, Alloc, std::vector<task<T>> tasks) -> task<internal::compute_fork_result_t<std::vector<task<T>>>>;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -921,13 +1156,6 @@ namespace lazy {
 		}
 	};
 
-	//! @brief state of coroutine stack when waiting ends
-	enum class state {
-		done,      //!< execution completed, @c task result may be ready
-		suspended, //!< suspended due to timeout or user request, @c generator result may be ready
-		blocked,   //!< suspended due to synchronization primitive
-	};
-
 	template<template<typename> typename Wrapper, typename Result>
 	struct [[nodiscard]] root<Wrapper<Result>> final {
 		//TODO: [[deprecated]]
@@ -951,7 +1179,7 @@ namespace lazy {
 
 		auto elapsed() const -> duration /*TODO: [C++26] pre(not valueless())*/ { return ptr->timer.elapsed(); }
 
-		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return ptr->log; }
+		auto log() const -> std::span<const log_message> /*TODO: [C++26] pre(not valueless())*/ { return ptr->log.messages; }
 
 		auto done() const -> bool /*TODO: [C++26] pre(not valueless())*/ { return ptr->handle.done(); }
 
@@ -1008,10 +1236,17 @@ namespace lazy {
 				else return elapsed_ + (now() - *last_resume);
 			}
 		};
+		struct logging_t final {
+			const log_level level;
+
+			std::atomic<bool> lock{false};
+			std::vector<log_message> messages;
+		};
+
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
-			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : level{level}, rd{*this}, handle{std::move(h)} {
+			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : log{.level = level}, rd{*this}, handle{std::move(h)} {
 				rd.top = handle;
 				auto & p{handle.promise()};
 				p.data.set_root(rd);
@@ -1019,12 +1254,10 @@ namespace lazy {
 				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
 			}
 
-			const log_level level;
+			logging_t log;
 			internal::root_data rd;
 			handle_t handle;
 			timer_t timer;
-
-			std::vector<log_message> log;
 		};
 		std::unique_ptr<data> ptr{std::make_unique<data>()};
 	};

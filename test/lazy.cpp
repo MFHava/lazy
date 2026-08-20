@@ -194,7 +194,7 @@ TEST_CASE("dumping", "[lazy]") {
 	const auto index{str.find('\0')};
 	REQUIRE(str.substr(0, index) == "test.abc");
 	REQUIRE(str.substr(index + 1) == "01234");
-	REQUIRE(str == std::string_view{"test.abc\00001234", 14});
+	REQUIRE(str == std::string_view{"test.abc\u{0}01234", 14});
 }
 
 TEST_CASE("is_tracing", "[lazy]") {
@@ -321,8 +321,6 @@ TEST_CASE("generator move-only", "[generator]") {
 	}()};
 }
 
-
-
 TEST_CASE("root_generator", "[root_generator]") {
 	using namespace std::chrono_literals;
 
@@ -392,4 +390,133 @@ TEST_CASE("root_generator", "[root_generator]") {
 	REQUIRE(g.done());
 }
 
+//TODO: unit test involving exceptions
+TEST_CASE("fork compile-time void", "[fork]") {
+	using namespace std::chrono_literals;
+
+	lazy::root r{[] -> lazy::task<> {
+		co_await lazy::fork(
+			[] -> lazy::task<> {
+				for(auto i{0}; i < 2; ++i) {
+					std::println("a{}", i);
+					co_yield lazy::blocked;
+				}
+				co_await [] -> lazy::task<> {
+					std::println("A-");
+					co_yield lazy::blocked;
+				}();
+				for(auto i{0}; i < 2; ++i) {
+					std::println("a{}", i + 3);
+					co_yield lazy::blocked;
+				}
+			}(),
+			[] -> lazy::task<> {
+				for(auto i{0}; i < 3; ++i) {
+					std::println("b{}", i);
+					co_yield lazy::blocked;
+				}
+			}(),
+			[] -> lazy::task<> {
+				for(auto i{0}; i < 7; ++i) {
+					std::println("c{}", i);
+					co_yield lazy::blocked;
+				}
+			}()
+		);
+	}()};
+#if 1
+	for(auto i{0}; i < 9; ++i) {
+		REQUIRE(r.wait_for(0ms) != lazy::state::done);
+		std::println("====");
+	}
+	REQUIRE(r.wait_for(0ms) == lazy::state::done);
+#else
+	while(not r.done()) r.wait();
+#endif
+}
+
+TEST_CASE("fork runtime void", "[fork]") {
+	using namespace std::chrono_literals;
+
+	lazy::root r{[] -> lazy::task<> {
+		std::vector<lazy::task<>> tasks;
+		tasks.emplace_back([] -> lazy::task<> {
+			for(auto i{0}; i < 2; ++i) {
+				std::println("a{}", i);
+				co_yield lazy::blocked;
+			}
+			co_await [] -> lazy::task<> {
+				std::println("A-");
+				co_yield lazy::blocked;
+			}();
+			for(auto i{0}; i < 2; ++i) {
+				std::println("a{}", i + 3);
+				co_yield lazy::blocked;
+			}
+		}());
+		tasks.emplace_back([] -> lazy::task<> {
+			for(auto i{0}; i < 3; ++i) {
+				std::println("b{}", i);
+				co_yield lazy::blocked;
+			}
+		}());
+		tasks.emplace_back([] -> lazy::task<> {
+			for(auto i{0}; i < 7; ++i) {
+				std::println("c{}", i);
+				co_yield lazy::blocked;
+			}
+		}());
+
+		co_await lazy::fork(std::move(tasks));
+	}()};
+#if 1
+	for(auto i{0}; i < 9; ++i) {
+		REQUIRE(r.wait_for(0ms) != lazy::state::done);
+		std::println("====");
+	}
+	REQUIRE(r.wait_for(0ms) == lazy::state::done);
+#else
+	while(not r.done()) r.wait();
+#endif
+}
+
+TEST_CASE("fork compile-time single", "[fork]") {
+	lazy::root r{[] -> lazy::task<int> {
+		co_return co_await lazy::fork(
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<int> { co_return 100; }(),
+			[] -> lazy::task<> { co_return; }()
+		);
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 100);
+}
+
+TEST_CASE("fork compile-time multiple", "[fork]") {
+	lazy::root r{[] -> lazy::task<double> {
+		auto [a, b] = co_await lazy::fork(
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<int> { co_return 100; }(),
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<double> { co_return 3.14; }(),
+			[] -> lazy::task<> { co_return; }()
+		);
+		co_return a * b;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 314.0);
+}
+
+TEST_CASE("fork counted compile-time", "[fork]") {
+	lazy::root r{[] -> lazy::task<> {
+		auto [a, b, c] = co_await lazy::fork<3>([](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		REQUIRE(a == 0);
+		REQUIRE(b == 1);
+		REQUIRE(c == 2);
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
 
