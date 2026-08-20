@@ -208,7 +208,7 @@ namespace lazy {
 	struct elements_of final { generator<T> g; };
 
 	namespace internal {
-		struct root_data;
+		class root_data;
 	}
 
 	//! @brief unique identifier of a coroutine stack
@@ -279,41 +279,36 @@ namespace lazy {
 		//! @brief base for all awaiters that will be passed through @c yield_value transparently
 		struct yield_base : std::suspend_always {};
 
-		struct root_data final {
+		class root_data final {
+			const
+			struct vtable final {
+				duration(*elapsed)(const void *) noexcept;
+				bool(*is_tracing)(const void *) noexcept;
+				void(*add_log_message)(void *, std::source_location, log_level, compat::function_ref<std::string()>);
+			} * vptr;
+			void * self;
+		public:
+			template<typename T>
+			root_data(T && obj) : self{std::addressof(obj)} {
+				using U = std::remove_reference_t<T>;
+				static constexpr vtable vtable{
+					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->timer.elapsed(); },
+					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
+					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
+						auto ptr{reinterpret_cast<U *>(self)};
+						if(ptr->level <= log) ptr->log.emplace_back(loc, log, msg());
+					}
+				};
+				vptr = &vtable;
+			}
+
 			auto get_id() const noexcept { return id{reinterpret_cast<std::uintptr_t>(static_cast<const void *>(this))}; }
+			auto elapsed() const noexcept -> duration { return vptr->elapsed(self); }
+			auto is_tracing() const noexcept -> bool { return vptr->is_tracing(self); }
+			auto add_log_message(std::source_location loc, log_level log, compat::function_ref<std::string()> msg) { vptr->add_log_message(self, loc, log, msg); }
 
 			std::coroutine_handle<> top;
-
-			//TODO: increase encapsulation
 			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
-
-			class stable_funcs_t final {
-				const
-				struct vtable final {
-					duration(*elapsed)(const void *)noexcept;
-					bool(*is_tracing)(const void *) noexcept;
-					void(*add_log_message)(void *, std::source_location, log_level, compat::function_ref<std::string()>);
-				} * vptr;
-				void * self;
-			public:
-				template<typename T>
-				stable_funcs_t(T && obj) : self{std::addressof(obj)} {
-					using U = std::remove_reference_t<T>;
-					static constexpr vtable vtable{
-						+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->timer.elapsed(); },
-						+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
-						+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
-							auto ptr{reinterpret_cast<U *>(self)};
-							if(ptr->level <= log) ptr->log.emplace_back(loc, log, msg());
-						}
-					};
-					vptr = &vtable;
-				}
-
-				auto elapsed() const noexcept -> duration { return vptr->elapsed(self); }
-				auto is_tracing() const noexcept -> bool { return vptr->is_tracing(self); }
-				auto add_log_message(std::source_location loc, log_level log, compat::function_ref<std::string()> msg) { vptr->add_log_message(self, loc, log, msg); }
-			} stable_funcs;
 
 			class {
 				//! @attention tagged "union"
@@ -392,8 +387,8 @@ namespace lazy {
 					//! @note loc will not identify the actual throw-site, due to the coroutine body transformation
 					auto & rd{data.get_root()};
 					try { throw; }
-					catch(const std::exception & exc) { rd.stable_funcs.add_log_message(loc, log_level::fatal, [&] { return std::string{exc.what()}; }); }
-					catch(...) { rd.stable_funcs.add_log_message(loc, log_level::fatal, [] { return std::string{"unknown error"}; }); }
+					catch(const std::exception & exc) { rd.add_log_message(loc, log_level::fatal, [&] { return std::string{exc.what()}; }); }
+					catch(...) { rd.add_log_message(loc, log_level::fatal, [] { return std::string{"unknown error"}; }); }
 					throw;
 				}
 			}
@@ -415,7 +410,7 @@ namespace lazy {
 					n.root = nested ? nested->root : std::addressof(self.promise());
 					auto & rd{n.root->data.get_root()};
 					rd.top = other;
-					if constexpr(Timed) elapsed = rd.stable_funcs.elapsed();
+					if constexpr(Timed) elapsed = rd.elapsed();
 					if(rd.suspend()) return std::noop_coroutine();
 					else return rd.top;
 				}
@@ -424,7 +419,7 @@ namespace lazy {
 					if(n.eptr) std::rethrow_exception(n.eptr);
 					if constexpr(Timed) {
 						auto & rd{n.root->data.get_root()};
-						elapsed = rd.stable_funcs.elapsed() - elapsed;
+						elapsed = rd.elapsed() - elapsed;
 					}
 
 					auto & promise{other.promise()};
@@ -592,7 +587,7 @@ namespace lazy {
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) noexcept -> bool {
 				const auto & rd{self.promise().data.find_root()};
-				result = rd.stable_funcs.is_tracing();
+				result = rd.is_tracing();
 				return rd.suspend();
 			}
 			auto await_resume() const noexcept -> bool { return result; }
@@ -610,7 +605,7 @@ namespace lazy {
 			template<typename Promise>
 			auto await_suspend(std::coroutine_handle<Promise> self) const -> bool {
 				auto & rd{self.promise().data.find_root()};
-				rd.stable_funcs.add_log_message(loc, level, [&] { return std::vformat(fmt, args); });
+				rd.add_log_message(loc, level, [&] { return std::vformat(fmt, args); });
 				return rd.suspend();
 			}
 		};
@@ -685,7 +680,7 @@ namespace lazy {
 		template<typename Promise>
 		auto await_suspend(std::coroutine_handle<Promise> self) const {
 			auto & rd{self.promise().data.find_root()};
-			rd.stable_funcs.add_log_message(loc, log_level::trace, [&] {
+			rd.add_log_message(loc, log_level::trace, [&] {
 				std::string msg{file_name};
 				msg += '\0';
 				dump_to(std::back_inserter(msg));
@@ -1016,7 +1011,8 @@ namespace lazy {
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
-			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : level{level}, rd{.top = h, .stable_funcs = *this}, handle{std::move(h)} {
+			data(log_level level, handle_t h) /*TODO: [C++26] pre(not w.valueless())*/ : level{level}, rd{*this}, handle{std::move(h)} {
+				rd.top = handle;
 				auto & p{handle.promise()};
 				p.data.set_root(rd);
 				if constexpr(requires{ p.yield_target; }) p.yield_target.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
