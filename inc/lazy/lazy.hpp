@@ -1184,8 +1184,8 @@ namespace lazy {
 		~mutex() noexcept { if(state != id{}) std::terminate(); } //tried to destroy locked mutex
 
 		//! @brief execute @c t whilst @c *this is locked
-		template<typename T>
-		auto locked(task<T> t) -> task<T> pre(not t.valueless()) {
+		template<typename Alloc, typename T>
+		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
 			const auto self{co_await get_identity};
 
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
@@ -1197,6 +1197,9 @@ namespace lazy {
 
 			co_return co_await std::move(t);
 		}
+
+		template<typename T>
+		auto locked(task<T> t) { return locked(std::allocator_arg, std::allocator<char>{}, std::move(t)); }
 	};
 
 	template<template<typename> typename Wrapper, typename Result>
