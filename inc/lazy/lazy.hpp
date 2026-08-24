@@ -23,6 +23,9 @@
 #include <system_error>
 #include <source_location>
 
+//TODO: for all atomic operations: determine correct memory_order!
+//TODO: for all CAS: determine whether strong is actually needed or if weak would be appropriate...
+
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code{.cpp} co_yield blocked; @endcode to yield control back from the coroutine to the caller and signal that progress is not possible due to a synchronization primitive
@@ -1193,13 +1196,65 @@ namespace lazy {
 				co_yield blocked;
 			}
 
-			const struct guard final { mutex & m; ~guard() noexcept { m.state.store({}); } } g{*this}; //defer...
+			const struct guard final { atomic_t & state; ~guard() noexcept { state = id{}; } } g{state}; //defer...
 
 			co_return co_await std::move(t);
 		}
 
 		template<typename T>
 		auto locked(task<T> t) { return locked(std::allocator_arg, std::allocator<char>{}, std::move(t)); }
+	};
+
+	//! @brief synchronization primitive
+	class shared_mutex final {
+		using atomic_t = std::atomic<std::uint64_t>;
+		static_assert(atomic_t::is_always_lock_free);
+		atomic_t state;
+
+		static
+		constexpr
+		std::uint64_t write_locked{std::uint64_t{1} << 63};
+	public:
+		shared_mutex() noexcept =default;
+		shared_mutex(const shared_mutex &) =delete;
+		auto operator=(const shared_mutex &) -> shared_mutex & =delete;
+		~shared_mutex() noexcept { if(state != 0) std::terminate(); } //tried to destroy locked shared_mutex
+
+		//! @brief execute @c t whilst @c *this is locked
+		template<typename Alloc, typename T>
+		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
+			for(std::uint64_t expected{0}; not state.compare_exchange_strong(expected, write_locked); expected = 0) {
+				//TODO: deadlock-detection like in @c mutex?
+				co_yield blocked;
+			}
+
+			const struct guard final { atomic_t & state; ~guard() noexcept { state = 0; } } g{state}; //defer...
+
+			co_return co_await std::move(t);
+		}
+
+		template<typename T>
+		auto locked(task<T> t) { return locked(std::allocator_arg, std::allocator<char>{}, std::move(t)); }
+
+		//! @brief execute @c t whilst @c *this is shared locked
+		template<typename Alloc, typename T>
+		auto shared_locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
+			for(auto val{state.load()};; val = state.load()) {
+				if(val == write_locked) co_yield blocked;
+				else {
+					const auto new_{val + 1};
+					if(new_ == write_locked) throw std::system_error{std::make_error_code(std::errc::value_too_large)};
+					if(state.compare_exchange_strong(val, new_)) break;
+				}
+			}
+
+			const struct guard final { atomic_t & state; ~guard() noexcept { --state; } } g{state}; //defer...
+
+			co_return co_await std::move(t);
+		}
+
+		template<typename T>
+		auto shared_locked(task<T> t) { return shared_locked(std::allocator_arg, std::allocator<char>{}, std::move(t)); }
 	};
 
 	template<template<typename> typename Wrapper, typename Result>
