@@ -33,6 +33,7 @@
 //!  * @code{.cpp} co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
 //!  * @code{.cpp} co_await timed{task}; @endcode block this coroutine until the awaited @c task is completed, then returns the time it took to complete and its result if any
 //!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
+//! @attention as of C++26 @code{.cpp} for co_await @endcode is not supported and must be expanded manually to implemented as @code{.cpp} for(auto it{co_await gen.begin()}; it != gen.end(); co_await ++it) ... @endcode
 namespace lazy {}
 
 #ifndef __cpp_contracts
@@ -43,6 +44,8 @@ namespace lazy {}
 	#define contract_assert(...) do {} while(0)
 #endif
 
+//! @brief compatibility shims for C++26 features / features not supported on every implementation
+//! @attention only a subset of the actual feature is provided
 namespace lazy::compat {
 #if __cpp_lib_chrono < 201907L
 	#warning std::chrono::is_clock_v is not supported by your implementation, using compat::is_clock_v as transitional solution.
