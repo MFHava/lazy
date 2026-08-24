@@ -520,3 +520,15 @@ TEST_CASE("fork counted compile-time", "[fork]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
+TEST_CASE("fork counted runtime", "[fork]") {
+	lazy::root r{[] -> lazy::task<> {
+		auto result = co_await lazy::fork(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		REQUIRE(result.size() == 3);
+		REQUIRE(result[0] == 0);
+		REQUIRE(result[1] == 1);
+		REQUIRE(result[2] == 2);
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
