@@ -791,15 +791,16 @@ namespace lazy {
 			using type = std::conditional_t<(std::tuple_size_v<tmp1> > 1), tmp1, tmp3>;
 		};
 
-		template<std::ranges::range T>
-		struct compute_fork_result<T> {
+		template<std::ranges::range T, typename Alloc>
+		struct compute_fork_result<T, Alloc> {
 		private:
 			using tmp0 = std::ranges::range_value_t<T>;
 			static_assert(task<tmp0>);
 			using tmp1 = task_result_t<tmp0>;
 			using tmp2 = std::conditional_t<std::is_void_v<tmp1>, int, tmp1>; //! @note prevent @c vector<void> from being constructed
+			using alloc = std::allocator_traits<Alloc>::template rebind_alloc<tmp2>;
 		public:
-			using type = std::conditional_t<std::is_void_v<tmp1>, void, std::vector<tmp2>>;
+			using type = std::conditional_t<std::is_void_v<tmp1>, void, std::vector<tmp2, alloc>>;
 		};
 
 		template<typename... Ts>
@@ -881,13 +882,14 @@ namespace lazy {
 			template<typename Alloc, std::ranges::forward_range Tasks>
 			requires task<std::ranges::range_value_t<Tasks>>
 			static
-			auto do_(std::allocator_arg_t, Alloc, Tasks tasks) -> lazy::task<compute_fork_result_t<Tasks>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
+			auto do_(std::allocator_arg_t, Alloc alloc, Tasks tasks) -> lazy::task<compute_fork_result_t<Tasks, Alloc>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
 				const auto & root{co_await get_root_awaiter{}};
 
 				std::atomic<bool> error{false};
 				const auto suspend{[&] noexcept { return error ? true : root.suspend(); }};
 
-				auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root}; }) | std::ranges::to<std::vector>()}; //TODO: use allocator here?
+				auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root}; })
+				                 | std::ranges::to<std::vector<fork_data, typename std::allocator_traits<Alloc>::template rebind_alloc<fork_data>>>(alloc)};
 				for(auto && [task, data] : std::views::zip(tasks, datas)) {
 					data.rd.suspend = compat::function_ref<bool() const noexcept>{suspend};
 					data.rd.top = data.bottom;
@@ -899,9 +901,9 @@ namespace lazy {
 						case state::suspended: co_yield progress; break;
 						case state::blocked: co_yield blocked; break;
 						case state::done: {
-							using Result = compute_fork_result_t<Tasks>; //TODO: use allocator here?
+							using Result = compute_fork_result_t<Tasks, Alloc>;
 							if constexpr(std::is_void_v<Result>) co_return;
-							else co_return tasks | std::views::transform([](auto & task) { return std::move(task.handle.promise().get_result()); }) | std::ranges::to<std::vector>();
+							else co_return tasks | std::views::transform([](auto & task) { return std::move(task.handle.promise().get_result()); }) | std::ranges::to<Result>(alloc);
 						}
 					}
 				}
@@ -959,7 +961,8 @@ namespace lazy {
 	//! @brief create multiple @c tasks and execute them in parallel
 	template<typename Alloc>
 	auto fork(std::allocator_arg_t, Alloc alloc, std::size_t count, allocator_aware_task_factory<Alloc> auto f) {
-		std::vector<decltype(f(std::allocator_arg, alloc, std::size_t{}))> tasks; //TODO: use allocator here?
+		using Task = decltype(f(std::allocator_arg, alloc, std::size_t{}));
+		std::vector<Task, typename std::allocator_traits<Alloc>::template rebind_alloc<Task>> tasks(alloc);
 		tasks.reserve(count);
 		for(std::size_t i{0}; i < count; ++i) tasks.emplace_back(f(std::allocator_arg, alloc, i));
 		return fork(std::allocator_arg, alloc, std::move(tasks));
