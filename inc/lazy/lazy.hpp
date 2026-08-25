@@ -24,7 +24,6 @@
 #include <source_location>
 
 //TODO: for all atomic operations: determine correct memory_order!
-//TODO: for all CAS: determine whether strong is actually needed or if weak would be appropriate...
 
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
@@ -334,10 +333,14 @@ namespace lazy {
 				using U = std::remove_reference_t<T>;
 				static constexpr vtable vtable{
 					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->timer.elapsed(); },
-					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->log.level == log_level::trace; },
+					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
 					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
 						auto ptr{reinterpret_cast<U *>(self)};
-						if(ptr->log.level <= log) ptr->log.messages.emplace_back(loc, log, msg());
+						if(ptr->level <= log) {
+							for(auto expected{false}; not ptr->message_lock.compare_exchange_weak(expected, true); expected = false);
+							const struct guard final { std::atomic<bool> & flag; ~guard() noexcept { flag = false; } } g{ptr->message_lock}; //defer...
+							ptr->messages.emplace_back(loc, log, msg());
+						}
 					}
 				};
 				vptr = &vtable;
@@ -1281,7 +1284,7 @@ namespace lazy {
 
 		auto elapsed() const -> duration pre(not valueless()) { return ptr->timer.elapsed(); }
 
-		auto log() const -> std::span<const log_message> pre(not valueless()) { return ptr->log.messages; }
+		auto log() const -> std::span<const log_message> pre(not valueless()) { return ptr->messages; }
 
 		auto done() const -> bool pre(not valueless()) { return ptr->handle.done(); }
 
@@ -1338,17 +1341,11 @@ namespace lazy {
 				else return elapsed_ + (now() - *last_resume);
 			}
 		};
-		struct logging_t final {
-			const log_level level;
-
-			std::atomic<bool> lock{false};
-			std::vector<log_message> messages;
-		};
 
 		struct data final {
 			using handle_t = internal::unique_handle<typename Wrapper<Result>::promise_type>;
 
-			data(log_level level, handle_t h) pre(h and not h.done()) : log{.level = level}, rd{*this}, handle{std::move(h)} {
+			data(log_level level, handle_t h) pre(h and not h.done()) : level{level}, rd{*this}, handle{std::move(h)} {
 				rd.top = handle;
 				auto & p{handle.promise()};
 				p.set_root(rd);
@@ -1356,7 +1353,9 @@ namespace lazy {
 				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
 			}
 
-			logging_t log;
+			const log_level level;
+			std::atomic<bool> message_lock{false};
+			std::vector<log_message> messages;
 			internal::root_data rd;
 			handle_t handle;
 			timer_t timer;
