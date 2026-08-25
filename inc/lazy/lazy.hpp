@@ -930,22 +930,22 @@ namespace lazy {
 	//! * @c tuple<U...>, where @c U... is the list of types @c W... from @c task<W...> with all instances of @c void removed
 	template<typename Alloc, typename... Tasks>
 	requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
-	auto fork(std::allocator_arg_t, Alloc alloc, Tasks... tasks) pre((not tasks.valueless()) and ...) { return internal::fork::do_(std::allocator_arg, alloc, std::move(tasks)...); }
+	auto all_of(std::allocator_arg_t, Alloc alloc, Tasks... tasks) pre((not tasks.valueless()) and ...) { return internal::fork::do_(std::allocator_arg, alloc, std::move(tasks)...); }
 
 	template<typename... Tasks>
 	requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
-	auto fork(Tasks... tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)...); }
+	auto all_of(Tasks... tasks) { return all_of(std::allocator_arg, std::allocator<char>{}, std::move(tasks)...); }
 
 	//! @brief execute multiple @c tasks in parallel
 	//! @returns a @c task managing the wrapped @c tasks, returning their results if any
 	//! @note the return type of the returned @c task is: @c void if @code{.cpp} T == void @endcode, else @c std::vector<T>
 	template<typename Alloc, std::ranges::forward_range Tasks>
 	requires internal::task<std::ranges::range_value_t<Tasks>>
-	auto fork(std::allocator_arg_t, Alloc alloc, Tasks tasks) pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) { return internal::fork::do_(std::allocator_arg, alloc, std::move(tasks)); }
+	auto all_of(std::allocator_arg_t, Alloc alloc, Tasks tasks) pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) { return internal::fork::do_(std::allocator_arg, alloc, std::move(tasks)); }
 
 	template<std::ranges::forward_range Tasks>
 	requires internal::task<std::ranges::range_value_t<Tasks>>
-	auto fork(Tasks tasks) { return fork(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
+	auto all_of(Tasks tasks) { return all_of(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
 
 	//! @brief factory for @c tasks matching this signature: @c task<?>(std::allocator_arg_t, Alloc, std::size_t);
 	template<typename F, typename Alloc>
@@ -963,27 +963,27 @@ namespace lazy {
 	//! @tparam N count of @c tasks to create
 	template<std::size_t N, typename Alloc>
 	requires(N >= 2)
-	auto fork(std::allocator_arg_t, Alloc alloc, allocator_aware_task_factory<Alloc> auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return fork(std::allocator_arg, alloc, std::invoke(f, std::allocator_arg, alloc, I)...); }(std::make_index_sequence<N>{}); }
+	auto all_of(std::allocator_arg_t, Alloc alloc, allocator_aware_task_factory<Alloc> auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return all_of(std::allocator_arg, alloc, std::invoke(f, std::allocator_arg, alloc, I)...); }(std::make_index_sequence<N>{}); }
 
 	template<std::size_t N>
 	requires(N >= 2)
-	auto fork(task_factory auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return fork(std::invoke(f, I)...); }(std::make_index_sequence<N>{}); }
+	auto all_of(task_factory auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return all_of(std::invoke(f, I)...); }(std::make_index_sequence<N>{}); }
 
 	//! @brief create multiple @c tasks and execute them in parallel
 	template<typename Alloc>
-	auto fork(std::allocator_arg_t, Alloc alloc, std::size_t count, allocator_aware_task_factory<Alloc> auto f) {
+	auto all_of(std::allocator_arg_t, Alloc alloc, std::size_t count, allocator_aware_task_factory<Alloc> auto f) {
 		using Task = decltype(f(std::allocator_arg, alloc, std::size_t{}));
 		std::vector<Task, typename std::allocator_traits<Alloc>::template rebind_alloc<Task>> tasks(alloc);
 		tasks.reserve(count);
 		for(std::size_t i{0}; i < count; ++i) tasks.emplace_back(f(std::allocator_arg, alloc, i));
-		return fork(std::allocator_arg, alloc, std::move(tasks));
+		return all_of(std::allocator_arg, alloc, std::move(tasks));
 	}
 
-	auto fork(std::size_t count, task_factory auto f) {
+	auto all_of(std::size_t count, task_factory auto f) {
 		std::vector<decltype(f(std::size_t{}))> tasks;
 		tasks.reserve(count);
 		for(std::size_t i{0}; i < count; ++i) tasks.emplace_back(f(i));
-		return fork(std::move(tasks));
+		return all_of(std::move(tasks));
 	}
 
 	//! @brief cooperative synchronous(!) recursive coroutine task

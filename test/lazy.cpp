@@ -391,11 +391,11 @@ TEST_CASE("root_generator", "[root_generator]") {
 }
 
 //TODO: unit test involving exceptions
-TEST_CASE("fork compile-time void", "[fork]") {
+TEST_CASE("all_of compile-time void", "[all_of]") {
 	using namespace std::chrono_literals;
 
 	lazy::root r{[] -> lazy::task<> {
-		co_await lazy::fork(
+		co_await lazy::all_of(
 			[] -> lazy::task<> {
 				for(auto i{0}; i < 2; ++i) {
 					std::println("a{}", i);
@@ -435,7 +435,7 @@ TEST_CASE("fork compile-time void", "[fork]") {
 #endif
 }
 
-TEST_CASE("fork runtime void", "[fork]") {
+TEST_CASE("all_of runtime void", "[all_of]") {
 	using namespace std::chrono_literals;
 
 	lazy::root r{[] -> lazy::task<> {
@@ -467,7 +467,7 @@ TEST_CASE("fork runtime void", "[fork]") {
 			}
 		}());
 
-		co_await lazy::fork(std::move(tasks));
+		co_await lazy::all_of(std::move(tasks));
 	}()};
 #if 1
 	for(auto i{0}; i < 9; ++i) {
@@ -480,9 +480,9 @@ TEST_CASE("fork runtime void", "[fork]") {
 #endif
 }
 
-TEST_CASE("fork compile-time single", "[fork]") {
+TEST_CASE("all_of compile-time single", "[all_of]") {
 	lazy::root r{[] -> lazy::task<int> {
-		co_return co_await lazy::fork(
+		co_return co_await lazy::all_of(
 			[] -> lazy::task<> { co_return; }(),
 			[] -> lazy::task<int> { co_return 100; }(),
 			[] -> lazy::task<> { co_return; }()
@@ -493,9 +493,9 @@ TEST_CASE("fork compile-time single", "[fork]") {
 	REQUIRE(r.result() == 100);
 }
 
-TEST_CASE("fork compile-time multiple", "[fork]") {
+TEST_CASE("all_of compile-time multiple", "[all_of]") {
 	lazy::root r{[] -> lazy::task<double> {
-		auto [a, b] = co_await lazy::fork(
+		auto [a, b] = co_await lazy::all_of(
 			[] -> lazy::task<> { co_return; }(),
 			[] -> lazy::task<int> { co_return 100; }(),
 			[] -> lazy::task<> { co_return; }(),
@@ -509,9 +509,9 @@ TEST_CASE("fork compile-time multiple", "[fork]") {
 	REQUIRE(r.result() == 314.0);
 }
 
-TEST_CASE("fork counted compile-time", "[fork]") {
+TEST_CASE("all_of counted compile-time", "[all_of]") {
 	lazy::root r{[] -> lazy::task<> {
-		auto [a, b, c] = co_await lazy::fork<3>([](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		auto [a, b, c] = co_await lazy::all_of<3>([](auto i) -> lazy::task<decltype(i)> { co_return i; });
 		REQUIRE(a == 0);
 		REQUIRE(b == 1);
 		REQUIRE(c == 2);
@@ -520,9 +520,9 @@ TEST_CASE("fork counted compile-time", "[fork]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("fork counted runtime", "[fork]") {
+TEST_CASE("all_of counted runtime", "[all_of]") {
 	lazy::root r{[] -> lazy::task<> {
-		auto result = co_await lazy::fork(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		auto result = co_await lazy::all_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
 		REQUIRE(result.size() == 3);
 		REQUIRE(result[0] == 0);
 		REQUIRE(result[1] == 1);
