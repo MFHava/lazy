@@ -785,10 +785,15 @@ namespace lazy {
 		template<typename From>
 		using tuple_erase_void_indices = typename tuple_erase_void<From, std::tuple<>, std::index_sequence<>, 0>::indices;
 
+		template<typename...>
+		struct compute_fork_result;
+
 		template<typename... Ts>
-		struct compute_fork_result {
+		using compute_fork_result_t = typename compute_fork_result<Ts...>::type;
+
+		template<task... Ts>
+		struct compute_fork_result<Ts...> {
 		private:
-			static_assert((task<Ts> and ...));
 			using tmp0 = std::tuple<task_result_t<Ts>...>;
 			using tmp1 = tuple_erase_void_type<tmp0>;
 			using tmp2 = decltype(std::tuple_cat(std::declval<tmp1>(), std::declval<std::tuple<void>>())); //! @note append void so that @c tuple_size_v<tmp2> is at least 1
@@ -808,9 +813,6 @@ namespace lazy {
 		public:
 			using type = std::conditional_t<std::is_void_v<tmp1>, void, std::vector<tmp2, alloc>>;
 		};
-
-		template<typename... Ts>
-		using compute_fork_result_t = typename compute_fork_result<Ts...>::type;
 
 		class fork final {
 			class get_root_awaiter final : public await_base {
