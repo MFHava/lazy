@@ -511,7 +511,7 @@ TEST_CASE("all_of compile-time multiple", "[all_of]") {
 
 TEST_CASE("all_of counted compile-time", "[all_of]") {
 	lazy::root r{[] -> lazy::task<> {
-		auto [a, b, c] = co_await lazy::all_of<3>([](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		auto [a, b, c] = co_await lazy::all_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
 		REQUIRE(a == 0);
 		REQUIRE(b == 1);
 		REQUIRE(c == 2);
@@ -527,6 +527,159 @@ TEST_CASE("all_of counted runtime", "[all_of]") {
 		REQUIRE(result[0] == 0);
 		REQUIRE(result[1] == 1);
 		REQUIRE(result[2] == 2);
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of compile-time", "[any_of]") {
+	lazy::root r{[] -> lazy::task<int> {
+		co_return co_await lazy::any_of(
+			[] -> lazy::task<int> {
+				for(;;) co_yield lazy::progress;
+				co_return 0;
+			}(),
+			[] -> lazy::task<int> {
+				co_return co_await [] -> lazy::task<int> {
+					for(;;) co_yield lazy::progress;
+					co_return 1;
+				}();
+			}(),
+			[] -> lazy::task<int> {
+				co_return 2;
+			}()
+		);
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 2);
+}
+
+TEST_CASE("any_of runtime", "[any_of]") {
+	lazy::root r{[] -> lazy::task<int> {
+		std::vector<lazy::task<int>> tasks;
+		tasks.emplace_back([] -> lazy::task<int> {
+			for(;;) co_yield lazy::progress;
+			co_return 0;
+		}());
+		tasks.emplace_back([] -> lazy::task<int> {
+			co_return co_await [] -> lazy::task<int> {
+				for(;;) co_yield lazy::progress;
+				co_return 1;
+			}();
+		}());
+		tasks.emplace_back([] -> lazy::task<int> {
+			co_return 2;
+		}());
+
+		co_return co_await lazy::any_of(std::move(tasks));
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 2);
+}
+
+TEST_CASE("any_of compile-time void, void", "[any_of]") {
+	lazy::root r{[] -> lazy::task<> {
+		co_await lazy::any_of(
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<> { co_return; }()
+		);
+		co_return;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of compile-time void, int", "[any_of]") {
+	lazy::root r{[] -> lazy::task<std::optional<int>> {
+		auto tmp = co_await lazy::any_of(
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<int> { co_return 100; }()
+		);
+		static_assert(std::is_same_v<decltype(tmp), std::optional<int>>);
+		co_return tmp;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+}
+
+TEST_CASE("any_of compile-time int, int", "[any_of]") {
+	lazy::root r{[] -> lazy::task<int> {
+		auto tmp = co_await lazy::any_of(
+			[] -> lazy::task<int> { co_return 10; }(),
+			[] -> lazy::task<int> { co_return 100; }()
+		);
+		static_assert(std::is_same_v<decltype(tmp), int>);
+		co_return tmp;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE((r.result() == 10 or r.result() == 100));
+}
+
+namespace {
+	template<typename... Lambdas>
+	struct lambda_visitor : Lambdas... {
+		using Lambdas::operator()...;
+	};
+}
+
+TEST_CASE("any_of compile-time int, double", "[any_of]") {
+	lazy::root r{[] -> lazy::task<std::variant<int, double>> {
+		auto tmp = co_await lazy::any_of(
+			[] -> lazy::task<int> { co_return 100; }(),
+			[] -> lazy::task<double> { co_return 3.14; }()
+		);
+		static_assert(std::is_same_v<decltype(tmp), std::variant<int, double>>);
+		co_return tmp;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	std::visit(lambda_visitor{
+		[](int val) { REQUIRE(val == 100); },
+		[](double val) { REQUIRE(val == 3.14); }
+	}, *r.result());
+}
+
+TEST_CASE("any_of compile-time void, int, double", "[any_of]") {
+	lazy::root r{[] -> lazy::task<std::optional<std::variant<int, double>>> {
+		auto tmp = co_await lazy::any_of(
+			[] -> lazy::task<> { co_return; }(),
+			[] -> lazy::task<int> { co_return 100; }(),
+			[] -> lazy::task<double> { co_return 3.14; }()
+		);
+		static_assert(std::is_same_v<decltype(tmp), std::optional<std::variant<int, double>>>);
+		co_return tmp;
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	if(*r.result()) {
+		std::visit(lambda_visitor{
+			[](int val) { REQUIRE(val == 100); },
+			[](double val) { REQUIRE(val == 3.14); }
+		}, **r.result());
+	}
+}
+
+TEST_CASE("any_of counted compile-time", "[any_of]") {
+	lazy::root r{[] -> lazy::task<> {
+		auto tmp = co_await lazy::any_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		static_assert(std::is_same_v<decltype(tmp), std::size_t>);
+		REQUIRE((tmp == 0 or tmp == 1 or tmp == 2));
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of counted runtime", "[any_of]") {
+	lazy::root r{[] -> lazy::task<> {
+		auto tmp = co_await lazy::any_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
+		static_assert(std::is_same_v<decltype(tmp), std::size_t>);
+		REQUIRE((tmp == 0 or tmp == 1 or tmp == 2));
 	}()};
 
 	REQUIRE(r.wait() == lazy::state::done);
