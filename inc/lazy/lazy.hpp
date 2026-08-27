@@ -573,8 +573,9 @@ namespace lazy {
 		class task_promise : public promise_base {
 			union { T result; };
 			bool initialized{false};
-		public:
 			bool update_suspension_state{false};
+		public:
+			void set_update_suspension_state() noexcept { update_suspension_state = true; }
 
 			task_promise() noexcept {}
 			task_promise(const task_promise &) =delete;
@@ -593,6 +594,9 @@ namespace lazy {
 
 		template<>
 		struct task_promise<void> : promise_base {
+			static
+			void set_update_suspension_state() noexcept {}
+
 			static
 			void return_void() noexcept {}
 		};
@@ -1500,8 +1504,7 @@ namespace lazy {
 				rd.top = handle;
 				auto & p{handle.promise()};
 				p.set_root(rd);
-				if constexpr(requires{ p.set_update_suspension_state(); }) p.set_update_suspension_state(); //when wrapping a generator<T>, it should yield to the storage in root_data, not it's internal pointer
-				if constexpr(requires { p.update_suspension_state; }) p.update_suspension_state = true; //when wrapping a task<T>, where T != void, it should yield to the storage in root_data
+				p.set_update_suspension_state(); //! @note for easier access, the result of returning/yielding to @c root should be placed in @c root_data
 			}
 
 			const log_level level;
