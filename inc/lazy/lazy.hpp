@@ -337,7 +337,7 @@ namespace lazy {
 					+[](const void * self) noexcept { return reinterpret_cast<const U *>(self)->level == log_level::trace; },
 					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
 						auto ptr{reinterpret_cast<U *>(self)};
-						if(ptr->level <= log) {
+						if(log <= ptr->level) {
 							for(auto expected{false}; not ptr->message_lock.compare_exchange_weak(expected, true); expected = false);
 							const struct guard final { std::atomic<bool> & flag; ~guard() noexcept { flag = false; } } g{ptr->message_lock}; //defer...
 							ptr->messages.emplace_back(loc, log, msg());
