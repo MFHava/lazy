@@ -1,172 +1,645 @@
 
-//          Copyright Michael Florian Hava.
+//		  Copyright Michael Florian Hava.
 // Distributed under the Boost Software License, Version 1.0.
-//    (See accompanying file ../LICENSE_1_0.txt or copy at
-//          http://www.boost.org/LICENSE_1_0.txt)
+//	(See accompanying file ../LICENSE_1_0.txt or copy at
+//		  http://www.boost.org/LICENSE_1_0.txt)
 
-#include <array>
-#include <print>
-#include <ranges>
-#include <thread>
-#include <iostream>
-#include <memory_resource>
-
-#include <catch2/catch_test_macros.hpp>
 #include <lazy/lazy.hpp>
+#include <thread>
+#include <catch2/catch_test_macros.hpp>
 
-TEST_CASE("trivial", "[lazy]") {
-	lazy::root t{[] -> lazy::task<int> { co_return 1; }()};
-	REQUIRE(not t.valueless());
+namespace {
+	template<typename... Lambdas>
+	struct lambda_visitor : Lambdas... {
+		using Lambdas::operator()...;
+	};
 
-	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(not t.valueless());
+	struct move_only final {
+		move_only() {}
+		move_only(const move_only &) =delete;
+		move_only(move_only &&) noexcept {}
+		auto operator=(const move_only &) -> move_only & =delete;
+		auto operator=(move_only &&) noexcept -> move_only & { return *this; }
+		~move_only() noexcept {}
+	};
 
-	REQUIRE(t.result() == 1);
-	REQUIRE(not t.valueless());
+	class wait_for final : public lazy::internal::yield_base {
+		const std::chrono::milliseconds time;
+	public:
+		wait_for(std::chrono::milliseconds ms) noexcept : time{ms} {}
+
+		template<typename Promise>
+		auto await_suspend(std::coroutine_handle<Promise> self) const noexcept -> bool {
+			std::this_thread::sleep_for(time);
+			return self.promise().find_root().suspend();
+		}
+	};
+}
+using namespace std::chrono_literals;
+
+//! @defgroup task Task
+//! @{
+TEST_CASE("task not valueless", "[task]") {
+	lazy::root r{[] -> lazy::task<int> { co_return 1; }()};
+	REQUIRE(not r.valueless());
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(not r.valueless());
+
+	REQUIRE(r.result() == 1);
+	REQUIRE(not r.valueless());
 }
 
-TEST_CASE("throwing_not_makes_valueless", "[lazy]") {
-	lazy::root t{[] -> lazy::task<void> {
+TEST_CASE("task not valueless after exception", "[task]") {
+	lazy::root r{[] -> lazy::task<> {
 		throw 0;
 		co_return;
 	}()};
-	REQUIRE(not t.valueless());
-
-	try { t.wait(); }
-	catch(...) {}
-	REQUIRE(not t.valueless());
+	REQUIRE(not r.valueless());
+	REQUIRE_THROWS(r.wait());
+	REQUIRE(not r.valueless());
 }
 
-	template<typename T>
-	struct myallocator final {
-		int val;
-	
-		using value_type = T;
-		using size_type = std::size_t;
-		using difference_type = std::ptrdiff_t;
+TEST_CASE("task nesting", "[task]") {
+	lazy::root r{[] -> lazy::task<double> {
+		auto t0 = co_await [] -> lazy::task<int> { co_return 10; }();
+		REQUIRE(t0 == 10);
 
-
-		template<typename U>
-		myallocator(myallocator<U> other) : val{other.val} { std::println("myallocator::rebind"); }
-
-		myallocator(int val) noexcept : val{val} { std::println("myallocator(int)"); }
-
-		myallocator(const myallocator & other) : val{other.val} { std::println("myallocator(const myallocator &)"); }
-		myallocator(myallocator && other) noexcept : val{std::exchange(other.val, -2)} { std::println("myallocator(const myallocator &)"); }
-		auto operator=(const myallocator & other) noexcept -> myallocator & { std::println("myallocator::operator=(const myallocator &)"); val = other.val; return *this; }
-		auto operator=(myallocator && other) -> myallocator & { std::println("myallocator::operator=(myallocator &&)"); val = std::exchange(other.val, -1); return *this; }
-		~myallocator() noexcept { std::println("~myallocator()"); }
-
-		auto allocate(std::size_t size) -> T * {
-			std::println("myallocator::allocate: {}", val);
-			return (T*)std::malloc(size);
-		}
-		void deallocate(T * ptr, std::size_t) {
-			std::println("myallocator::deallocate: {}", val);
-			std::free(ptr);
-		}
-	};
-
-TEST_CASE("stateless_allocator", "[lazy]") {
-	myallocator<bool> a{10};
-
-	std::array<std::byte, 1024> buffer{}; // enough to fit in all nodes
-	std::pmr::monotonic_buffer_resource mbr{buffer.data(), buffer.size()};
-	std::pmr::polymorphic_allocator<int> pa{&mbr};
-
-	lazy::root t{[](std::allocator_arg_t, auto...) -> lazy::task<int> {
-		co_return 1;
-	}(std::allocator_arg, pa)};
-
-	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.result() == 1);
-}
-
-TEST_CASE("nesting", "[lazy]") {
-	lazy::root t{[] -> lazy::task<double> {
-		auto v0 = co_await [] -> lazy::task<int> { co_return 10; }();
-		REQUIRE(v0 == 10);
-
-		auto v1 = co_await [] -> lazy::task<float> {
+		auto t1 = co_await [] -> lazy::task<float> {
 			co_return co_await [] -> lazy::task<int> { co_return 2; }();
 		}();
-		REQUIRE(v1 == 2.f);
+		REQUIRE(t1 == 2.f);
 
-		co_return v0 / v1;
+		co_return t0 / t1;
 	}()};
 
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 5.0);
+}
+
+TEST_CASE("task move-only result", "[task]") {
+	lazy::root r0{[] -> lazy::task<move_only> { co_return move_only{}; }()};
+
+	REQUIRE(r0.wait() == lazy::state::done);
+	REQUIRE(r0.result());
+
+	lazy::root r1{[] -> lazy::task<move_only> {
+		move_only mo;
+		co_return mo;
+	}()};
+
+	REQUIRE(r1.wait() == lazy::state::done);
+	REQUIRE(r1.result());
+}
+
+TEST_CASE("task timed void", "[task]") {
+	lazy::root r{[] -> lazy::task<lazy::duration> {
+		co_return co_await lazy::timed{[] -> lazy::task<> {
+			co_yield wait_for{5ms};
+		}()};
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	REQUIRE(r.result() < r.elapsed());
+}
+
+TEST_CASE("task timed result", "[task]") {
+	lazy::root r{[] -> lazy::task<std::pair<lazy::duration, int>> {
+		co_return co_await lazy::timed{[] -> lazy::task<int> {
+			co_yield wait_for{5ms};
+			co_return 1234;
+		}()};
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	auto && [elapsed, result]{*r.result()};
+	REQUIRE(elapsed < r.elapsed());
+	REQUIRE(result == 1234);
+}
+//! @}
+
+//! @defgroup generator Generator
+//! @{
+TEST_CASE("generator not valueless", "[generator]") {
+}
+
+TEST_CASE("generator not valueless after exception", "[generator]") {
+	lazy::root r{[] -> lazy::generator<int> {
+		throw 0;
+		co_return;
+	}()};
+	REQUIRE(not r.valueless());
+	REQUIRE_THROWS(r.wait());
+	REQUIRE(not r.valueless());
+}
+
+TEST_CASE("generator nesting", "[generator]") {
+	lazy::root r{[] -> lazy::generator<double> {
+		auto g0{[] -> lazy::generator<int> { co_yield 10; }()};
+		auto g1{[] -> lazy::generator<float> {
+			auto g2{[] -> lazy::generator<int> { co_yield 2; }()};
+			for(auto it{co_await g2.begin()}; it != g2.end(); co_await ++it)
+				co_yield *it;
+		}()};
+		for(auto it{co_await g0.begin()}; it != g0.end(); co_await ++it) {
+			auto t0{*it};
+			REQUIRE(t0 == 10);
+			for(auto itt{co_await g1.begin()}; itt != g1.end(); co_await ++itt) {
+				auto t1{*itt};
+				REQUIRE(t1 == 2.f);
+				co_yield t0 / t1;
+			}
+		}
+	}()};
+
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result() == 5.0);
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(not r.result());
+}
+
+TEST_CASE("generator move-only result", "[generator]") {
+	lazy::root t{[] -> lazy::generator<move_only> {
+		co_yield move_only{};
+		move_only mo;
+		co_yield std::move(mo);
+	}()};
+
+	REQUIRE(t.wait() == lazy::state::suspended);
+	REQUIRE(t.result());
+	REQUIRE(t.wait() == lazy::state::suspended);
+	REQUIRE(t.result());
 	REQUIRE(t.wait() == lazy::state::done);
-	REQUIRE(t.result() == 5.0);
+	REQUIRE(not t.result());
 }
 
-//TODO: more complex timer test case
-TEST_CASE("time", "[lazy]") {
-	using namespace std::chrono_literals;
+TEST_CASE("generator elements_of", "[generator]") {
+	lazy::root r{[] -> lazy::generator<int> {
+		auto g{[] -> lazy::generator<int> {
+			for(auto i{0}; i < 5; ++i)
+				co_yield i;
 
-	lazy::root t{[] -> lazy::task<> {
-		co_await [] -> lazy::task<> {
-			std::this_thread::sleep_for(1ms);
-			co_return;
-		}();
+			co_yield lazy::elements_of{[] -> lazy::generator<int> {
+				for(auto i{5}; i < 10; ++i)
+					co_yield i;
+			}()};
+		}()};
+		co_yield lazy::elements_of{std::move(g)};
 	}()};
 
-	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
-	std::this_thread::sleep_for(10ms);
-	REQUIRE(t.wait_for(0ms) == lazy::state::suspended);
-	std::this_thread::sleep_for(10ms);
-	REQUIRE(t.wait_for(0ms) == lazy::state::done);
-	const auto elapsed{t.elapsed()};
-	std::println("elapsed: {}", std::chrono::duration_cast<std::chrono::milliseconds>(elapsed));
-	REQUIRE(elapsed < 2ms);
-}
-
-//TODO: more complex test case for mutex (including threads and thread migration)
-TEST_CASE("mutex", "[lazy]") {
-	using namespace std::chrono_literals;
-	static lazy::mutex m;
-
-	lazy::root t0{[] -> lazy::task<int> {
-		co_return co_await m.locked([] -> lazy::task<int> {
-			std::println("t0 locked m");
-			std::this_thread::sleep_for(10ms);
-			co_yield lazy::progress;
-			std::println("t0 unlocking m");
-			co_return 10;
-		}());
-	}()};
-
-	lazy::root t1{[] -> lazy::task<> {
-		co_await m.locked([] -> lazy::task<> {
-			std::println("t1 locked m");
-			co_yield lazy::progress;
-			std::println("t1 unlocking m");
-		}());
-	}()};
-
-	REQUIRE(t0.wait_for(1ms) == lazy::state::suspended);
-	for(auto i{0}; i < 3; ++i) {
-		REQUIRE(t1.wait_for(1ms) == lazy::state::blocked);
-		std::println("t1 blocked");
+	for(auto i{0}; i < 10; ++i) {
+		REQUIRE(r.wait() == lazy::state::suspended);
+		REQUIRE(r.result() == i);
 	}
-	REQUIRE(t0.wait() == lazy::state::done);
-	REQUIRE(t0.result() == 10);
+	REQUIRE(r.wait() == lazy::state::done);
+}
+//! @}
 
-	REQUIRE(t1.wait() == lazy::state::done);
+//! @defgroup all_of Waiting For Many Tasks
+//! @{
+TEST_CASE("all_of compile-time void", "[all_of]") {
+	lazy::root r{lazy::all_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<> { co_return; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
 }
 
-//TODO: more complex logging test case
-TEST_CASE("logging", "[lazy]") {
-	lazy::root t{lazy::log_level::info, [] -> lazy::task<> {
+TEST_CASE("all_of runtime void", "[all_of]") {
+	std::vector<lazy::task<>> tasks;
+	for(auto i{0}; i < 2; ++i) tasks.emplace_back([] -> lazy::task<> { co_return; }());
+	lazy::root r{lazy::all_of(std::move(tasks))};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("all_of compile-time single", "[all_of]") {
+	lazy::root r{lazy::all_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<int> { co_return 100; }(),
+		[] -> lazy::task<> { co_return; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 100);
+}
+
+TEST_CASE("all_of compile-time multiple", "[all_of]") {
+	lazy::root r{lazy::all_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<int> { co_return 100; }(),
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<double> { co_return 3.14; }(),
+		[] -> lazy::task<> { co_return; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	auto & result{*r.result()};
+	static_assert(std::is_same_v<std::decay_t<decltype(result)>, std::tuple<int, double>>);
+
+	auto & [a, b]{result};
+	REQUIRE(a == 100);
+	REQUIRE(b == 3.14);
+}
+
+TEST_CASE("all_of counted compile-time", "[all_of]") {
+	lazy::root r{lazy::all_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	auto & [a, b, c]{*r.result()};
+	REQUIRE(a == 0);
+	REQUIRE(b == 1);
+	REQUIRE(c == 2);
+}
+
+TEST_CASE("all_of counted runtime", "[all_of]") {
+	lazy::root r{lazy::all_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	auto & result{*r.result()};
+
+	REQUIRE(result.size()== 3);
+	REQUIRE(result[0] == 0);
+	REQUIRE(result[1] == 1);
+	REQUIRE(result[2] == 2);
+}
+
+TEST_CASE("all_of compile-time throw", "[all_of]") {
+	lazy::root r{lazy::all_of(
+		[] -> lazy::task<int> { co_return 10; }(),
+		[] -> lazy::task<double> { co_return 3.14; }(),
+		[] -> lazy::task<void> { throw std::bad_exception{}; co_return; }()
+	)};
+
+	REQUIRE_THROWS_AS(r.wait(), std::bad_exception);
+}
+
+TEST_CASE("all_of runtime throw", "[all_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> { co_return 5; }());
+	tasks.emplace_back([] -> lazy::task<int> { co_return 3; }());
+	tasks.emplace_back([] -> lazy::task<int> { co_return 1; }());
+	tasks.emplace_back([] -> lazy::task<int> { throw std::bad_exception{}; co_return 0; }());
+
+	lazy::root r{lazy::all_of(std::move(tasks))};
+	REQUIRE_THROWS_AS(r.wait(), std::bad_exception);
+}
+
+TEST_CASE("all_of compile-time blocked", "[all_of]") {
+	lazy::root r{lazy::all_of(lazy::cw<2>, [](auto i) -> lazy::task<> {
+		if(i == 0) co_yield lazy::progress;
+		else co_yield lazy::blocked;
+		co_yield lazy::progress;
+		co_yield lazy::blocked;
+		co_yield lazy::progress;
+	})};
+
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::blocked);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("all_of runtime blocked", "[all_of]") {
+	lazy::root r{lazy::all_of(2, [](auto i) -> lazy::task<> {
+		if(i == 0) co_yield lazy::progress;
+		else co_yield lazy::blocked;
+		co_yield lazy::progress;
+		co_yield lazy::blocked;
+		co_yield lazy::progress;
+	})};
+
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::blocked);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait() == lazy::state::done);
+}
+//! @}
+
+//! @defgroup any_of Waiting For One of Many Tasks
+//! @{
+TEST_CASE("any_of compile-time", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<int> {
+			for(;;) co_yield lazy::progress;
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_return co_await [] -> lazy::task<int> {
+				for(;;) co_yield lazy::progress;
+				co_return 1;
+			}();
+		}(),
+		[] -> lazy::task<int> {
+			co_return 2;
+		}()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 2);
+}
+
+TEST_CASE("any_of runtime", "[any_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> {
+		for(;;) co_yield lazy::progress;
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_return co_await [] -> lazy::task<int> {
+			for(;;) co_yield lazy::progress;
+			co_return 1;
+		}();
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_return 2;
+	}());
+
+	lazy::root r{lazy::any_of(std::move(tasks))};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result() == 2);
+}
+
+TEST_CASE("any_of compile-time void, void", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<> { co_return; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of compile-time void, int", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<int> { co_return 100; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	REQUIRE(r.result()->value_or(100) == 100);
+}
+
+TEST_CASE("any_of compile-time int, int", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<int> { co_return 10; }(),
+		[] -> lazy::task<int> { co_return 100; }()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	REQUIRE((r.result() == 10 or r.result() == 100));
+}
+
+TEST_CASE("any_of compile-time int, double", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<int> { co_return 100; }(),
+		[] -> lazy::task<double> { co_return 3.14; }()
+	)};
+	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::variant<int, double>>);
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	std::visit(lambda_visitor{
+		[](int val) { REQUIRE(val == 100); },
+		[](double val) { REQUIRE(val == 3.14); }
+	}, *r.result());
+}
+
+TEST_CASE("any_of compile-time void, int, double", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<> { co_return; }(),
+		[] -> lazy::task<int> { co_return 100; }(),
+		[] -> lazy::task<double> { co_return 3.14; }()
+	)};
+	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::optional<std::variant<int, double>>>);
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	if(*r.result()) {
+		std::visit(lambda_visitor{
+			[](int val) { REQUIRE(val == 100); },
+			[](double val) { REQUIRE(val == 3.14); }
+		}, **r.result());
+	}
+}
+
+TEST_CASE("any_of counted compile-time", "[any_of]") {
+	lazy::root r{lazy::any_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+
+	auto result{*r.result()};
+	static_assert(std::is_same_v<decltype(result), std::size_t>);
+	REQUIRE((result == 0 or result == 1 or result == 2));
+}
+
+TEST_CASE("any_of counted runtime", "[any_of]") {
+	lazy::root r{lazy::any_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+
+	auto result{*r.result()};
+	static_assert(std::is_same_v<decltype(result), std::size_t>);
+	REQUIRE((result == 0 or result == 1 or result == 2));
+}
+
+TEST_CASE("any_of compile-time throw ignored", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<int> {
+			throw std::logic_error{"This shouldn't propagate"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_yield lazy::progress;
+			co_yield wait_for{10ms};
+			throw std::logic_error{"This shouldn't propagagte either"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_yield lazy::progress;
+			co_yield wait_for{10ms};
+			co_yield wait_for{10ms};
+			co_return 10;
+		}()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	REQUIRE(r.result() == 10);
+}
+
+TEST_CASE("any_of compile-time throw", "[any_of]") {
+	lazy::root r{lazy::any_of(
+		[] -> lazy::task<int> {
+			throw std::logic_error{"This shouldn't propagate"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_yield lazy::progress;
+			co_yield wait_for{10ms};
+			throw std::logic_error{"This shouldn't propagagte either"};
+			co_return 0;
+		}()
+	)};
+
+	REQUIRE_THROWS_AS(r.wait(), std::runtime_error);
+}
+
+TEST_CASE("any_of runtime throw ignored", "[any_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> {
+		throw std::logic_error{"This shouldn't propagate"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield lazy::progress;
+		co_yield wait_for{10ms};
+		throw std::logic_error{"This shouldn't propagagte either"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield lazy::progress;
+		co_yield wait_for{10ms};
+		co_yield wait_for{10ms};
+		co_return 10;
+	}());
+
+	lazy::root r{lazy::any_of(std::move(tasks))};
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.result());
+	REQUIRE(r.result() == 10);
+}
+
+TEST_CASE("any_of runtime throw", "[any_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> {
+		throw std::logic_error{"This shouldn't propagate"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield lazy::progress;
+		co_yield wait_for{10ms};
+		throw std::logic_error{"This shouldn't propagagte either"};
+		co_return 0;
+	}());
+
+	lazy::root r{lazy::any_of(std::move(tasks))};
+	REQUIRE_THROWS_AS(r.wait(), std::runtime_error);
+}
+
+TEST_CASE("any_of compile-time blocked", "[any_of]") {
+	lazy::root r{lazy::any_of(lazy::cw<2>, [](auto i) -> lazy::task<> {
+		if(i == 0) co_yield lazy::progress;
+		else co_yield lazy::blocked;
+		co_yield lazy::progress;
+		co_yield lazy::blocked;
+		co_yield lazy::progress;
+	})};
+
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::blocked);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of runtime blocked", "[any_of]") {
+	lazy::root r{lazy::any_of(2, [](auto i) -> lazy::task<> {
+		if(i == 0) co_yield lazy::progress;
+		else co_yield lazy::blocked;
+		co_yield lazy::progress;
+		co_yield lazy::blocked;
+		co_yield lazy::progress;
+	})};
+
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait_for(0ms) == lazy::state::blocked);
+	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
+	REQUIRE(r.wait() == lazy::state::done);
+}
+//@}
+
+//! @defgroup mutex Synchronization Primitives
+//! @{
+TEST_CASE("mutex", "[mutex]") {
+	lazy::mutex m;
+	lazy::root r0{m.locked([] -> lazy::task<int> {
+		co_yield wait_for{10ms};
+		co_return 10;
+	}())};
+	lazy::root r1{m.locked([] -> lazy::task<> {
+		co_yield lazy::progress;
+	}())};
+
+	REQUIRE(r0.wait_for(1ms) == lazy::state::suspended);
+	for(auto i{0}; i < 3; ++i) REQUIRE(r1.wait_for(1ms) == lazy::state::blocked);
+	REQUIRE(r0.wait() == lazy::state::done);
+	REQUIRE(r0.result() == 10);
+	REQUIRE(r1.wait() == lazy::state::done);
+}
+
+TEST_CASE("shared_mutex", "[shared_mutex]") {
+	static lazy::shared_mutex m;
+	lazy::root r0{[] -> lazy::task<> {
+		co_await m.locked([] -> lazy::task<> {
+			co_yield wait_for{10ms};
+		}());
+		co_yield wait_for(10ms);
+		co_await m.locked([] -> lazy::task<> {
+			co_yield wait_for{10ms};
+		}());
+	}()};
+	lazy::root r1{m.shared_locked([] -> lazy::task<> {
+		co_yield wait_for{10ms};
+	}())};
+	lazy::root r2{m.shared_locked([] -> lazy::task<> {
+		co_yield wait_for{10ms};
+	}())};
+
+	REQUIRE(r0.wait_for(1ms) == lazy::state::suspended);
+	for(auto i{0}; i < 3; ++i) {
+		REQUIRE(r1.wait_for(1ms) == lazy::state::blocked);
+		REQUIRE(r2.wait_for(1ms) == lazy::state::blocked);
+	}
+	REQUIRE(r0.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(r1.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(r2.wait_for(1ms) == lazy::state::suspended);
+	REQUIRE(r0.wait_for(1ms) == lazy::state::blocked);
+	REQUIRE(r1.wait_for(1ms) == lazy::state::done);
+	REQUIRE(r2.wait_for(1ms) == lazy::state::done);
+	REQUIRE(r0.wait() == lazy::state::done);
+}
+//! @}
+
+//! @defgroup logging Logging Framework
+//! @{
+TEST_CASE("logging", "[logging]") {
+	lazy::root r{lazy::log_level::info, [] -> lazy::task<> {
 		int val{1234};
 		co_await lazy::warning{"This is visible - {}", val};
 		co_await lazy::debug{"This is invisible"};
 		co_await lazy::error{"This is once again visible"};
 		throw std::logic_error{"This is an exception"};
 	}()};
-
-	REQUIRE_THROWS(t.wait());
-	//REQUIRE(t.log().size() == 3);
-	std::println("Log: {}", t.log() | std::views::filter([](const auto & msg) { return msg.level < lazy::log_level::trace; }) |  std::views::transform([](const auto & msg) { return msg.data; }));
+	
+	REQUIRE_THROWS(r.wait());
+	REQUIRE(r.log().size() == 3);
+	REQUIRE(r.log()[0].level == lazy::log_level::warning);
+	REQUIRE(r.log()[1].level == lazy::log_level::error);
+	REQUIRE(r.log()[2].level == lazy::log_level::fatal);
 }
 
 namespace {
@@ -185,11 +658,11 @@ namespace {
 	dump_range(std::string_view, R &&) -> dump_range<R>;
 }
 
-TEST_CASE("dumping", "[lazy]") {
-	lazy::root t{[] -> lazy::task<> { co_await dump_range{"test.abc", std::views::iota(0) | std::views::take(5)}; }()};
-	t.wait();
-	REQUIRE(t.log().size() == 1);
-	const std::string_view str{t.log().front().data};
+TEST_CASE("dumping", "[logging]") {
+	lazy::root r{[] -> lazy::task<> { co_await dump_range{"test.abc", std::views::iota(0) | std::views::take(5)}; }()};
+	REQUIRE(r.wait() == lazy::state::done);
+	REQUIRE(r.log().size() == 1);
+	const std::string_view str{r.log().front().data};
 	REQUIRE(str.size() == 14);
 	const auto index{str.find('\0')};
 	REQUIRE(str.substr(0, index) == "test.abc");
@@ -197,491 +670,12 @@ TEST_CASE("dumping", "[lazy]") {
 	REQUIRE(str == std::string_view{"test.abc\u{0}01234", 14});
 }
 
-TEST_CASE("is_tracing", "[lazy]") {
-	lazy::root t{lazy::log_level::trace, [] -> lazy::task<> {
-		REQUIRE(co_await lazy::get_is_tracing);
-	}()};
-	t.wait();
-	REQUIRE(t.done());
+TEST_CASE("is_tracing", "[logging]") {
+	lazy::root r0{lazy::log_level::trace, [] -> lazy::task<> { REQUIRE(co_await lazy::get_is_tracing); }()};
+	REQUIRE(r0.wait() == lazy::state::done);
 
-	t = {lazy::log_level::fatal, [] -> lazy::task<> {
-		REQUIRE(not co_await lazy::get_is_tracing);
-	}()};
-	t.wait();
-	REQUIRE(t.done());
+	lazy::root r1{lazy::log_level::fatal, [] -> lazy::task<> { REQUIRE(not co_await lazy::get_is_tracing); }()};
+	REQUIRE(r1.wait() == lazy::state::done);
 }
-
-//TODO: timed waiting, etc.
-static_assert(!std::is_copy_constructible_v<decltype(std::declval<lazy::generator<int>>().begin())>);
-
-auto yolo() -> lazy::generator<char> {
-	co_yield co_await [] -> lazy::task<char> { co_return 'x'; }() + 1;
-	auto gen = [] -> lazy::generator<char> {
-		co_yield 'n';
-		co_yield co_await [] -> lazy::task<char> { co_return 'k'; }();
-	}();
-	for(auto it = co_await gen.begin(); it != gen.end(); co_await ++it) co_yield *it + 1;
-	co_yield 'o';
-}
-
-
-auto flipflop() -> lazy::generator<int> {
-	std::println("flipflop");
-	for(int i = 0; i < 8; ++i) {
-		co_yield lazy::progress;
-		co_yield i % 2;
-		co_yield lazy::progress;
-	}
-}
-
-auto iota() -> lazy::generator<int> {
-	co_yield lazy::elements_of{flipflop()};
-	std::println("iota");
-	for(int i = 0; i < 10; ++i) {
-		co_yield i;
-	}
-}
-
-auto fibonacci() -> lazy::generator<int> {
-	co_yield lazy::elements_of{iota()};
-	std::println("fibonacci");
-	auto a = 0, b = 1;
-	for (;;) {
-		co_yield std::exchange(a, std::exchange(b, a + b));
-	}
-}
-
-TEST_CASE("generator fib", "[generator]") {
-	lazy::root t{[] -> lazy::task<void> {
-		auto gen{fibonacci()};
-		for(auto beg = co_await gen.begin(); beg != gen.end(); co_await ++beg) {
-			auto && i{*beg};
-
-			if(i > 1000) break;
-			std::print("{} ", i);
-
-			co_await [] -> lazy::task<void> {
-				std::println("nested task");
-				co_return;
-			}(); 
-
-			auto g{yolo()};
-			for(auto b = co_await g.begin(); b != g.end(); co_await ++b) std::print("{}", *b);
-			std::println();
-		}
-
-		std::println("{}", (co_await [] -> lazy::task<std::string> { co_return "=========== DONE ==========="; }()).c_str());
-	}()};
-
-
-#if 0
-	using namespace std::chrono_literals;
-	while(not t.wait_for(0ms)) std::print(" ===== ");
-#else
-	REQUIRE(t.wait() == lazy::state::done);
-#endif
-}
-
-TEST_CASE("generator elements_of", "[generator]") {
-	lazy::root t{[] -> lazy::task<void> {
-		auto outer{[] -> lazy::generator<std::string_view> {
-			co_yield "before";
-			auto inner{[] -> lazy::generator<std::string_view> {
-				for(auto i{0}; i < 5; ++i)
-					co_yield std::format("test {}", i);
-			}()};
-			co_yield lazy::elements_of{std::move(inner)};
-			co_yield "after";
-		}()};
-		for(auto it{co_await outer.begin()}; it != outer.end(); co_await ++it)
-			std::println("{}", *it);
-	}()};
-	REQUIRE(t.wait() == lazy::state::done);
-}
-
-TEST_CASE("generator move-only", "[generator]") {
-	struct move_only {
-		move_only() {}
-		move_only(const move_only &) =delete;
-		move_only(move_only &&) noexcept {}
-		auto operator=(const move_only &) -> move_only & =delete;
-		auto operator=(move_only &&) noexcept -> move_only & { return *this; }
-		~move_only() noexcept {}
-	};
-
-	lazy::root t{[] -> lazy::task<void> {
-		auto g{[] -> lazy::generator<move_only> {
-			co_yield move_only{};
-			move_only mo;
-			//error: co_yield mo;
-		}()};
-		for(auto it{co_await g.begin()}; it != g.end(); co_await ++it) {
-			(void)*it;
-		}
-	}()};
-}
-
-TEST_CASE("root_generator", "[root_generator]") {
-	using namespace std::chrono_literals;
-
-	lazy::root g{[] -> lazy::generator<int> {
-		co_yield 1;
-		co_yield 2;
-		std::this_thread::sleep_for(10ms);
-		co_yield lazy::progress;
-		co_yield 3;
-		co_yield lazy::elements_of{[] -> lazy::generator<int> {
-			co_yield 4;
-			co_yield 5;
-			std::this_thread::sleep_for(10ms);
-			co_yield lazy::progress;
-			co_yield lazy::elements_of{[] -> lazy::generator<int> {
-				co_return;
-			}()};
-			co_yield 6;
-			co_yield lazy::elements_of{[] -> lazy::generator<int> {
-				auto inner = [] -> lazy::generator<int> {
-					co_yield 100;
-					co_yield 7;
-				}();
-				auto it = co_await inner.begin();
-				co_await ++it;
-				co_yield *it;
-			}()};
-			co_yield 8;
-		}()};
-		co_yield 9;
-	}()};
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 1);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 2);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(not g.result());
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 3);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 4);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 5);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(not g.result());
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 6);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 7);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 8);
-
-	REQUIRE(g.wait_for(1ms) == lazy::state::suspended);
-	REQUIRE(g.result() == 9);
-
-	REQUIRE(g.wait() == lazy::state::done);
-	REQUIRE(g.done());
-}
-
-//TODO: unit test involving exceptions
-TEST_CASE("all_of compile-time void", "[all_of]") {
-	using namespace std::chrono_literals;
-
-	lazy::root r{[] -> lazy::task<> {
-		co_await lazy::all_of(
-			[] -> lazy::task<> {
-				for(auto i{0}; i < 2; ++i) {
-					std::println("a{}", i);
-					co_yield lazy::blocked;
-				}
-				co_await [] -> lazy::task<> {
-					std::println("A-");
-					co_yield lazy::blocked;
-				}();
-				for(auto i{0}; i < 2; ++i) {
-					std::println("a{}", i + 3);
-					co_yield lazy::blocked;
-				}
-			}(),
-			[] -> lazy::task<> {
-				for(auto i{0}; i < 3; ++i) {
-					std::println("b{}", i);
-					co_yield lazy::blocked;
-				}
-			}(),
-			[] -> lazy::task<> {
-				for(auto i{0}; i < 7; ++i) {
-					std::println("c{}", i);
-					co_yield lazy::blocked;
-				}
-			}()
-		);
-	}()};
-#if 1
-	for(auto i{0}; i < 9; ++i) {
-		REQUIRE(r.wait_for(0ms) != lazy::state::done);
-		std::println("====");
-	}
-	REQUIRE(r.wait_for(0ms) == lazy::state::done);
-#else
-	while(not r.done()) r.wait();
-#endif
-}
-
-TEST_CASE("all_of runtime void", "[all_of]") {
-	using namespace std::chrono_literals;
-
-	lazy::root r{[] -> lazy::task<> {
-		std::vector<lazy::task<>> tasks;
-		tasks.emplace_back([] -> lazy::task<> {
-			for(auto i{0}; i < 2; ++i) {
-				std::println("a{}", i);
-				co_yield lazy::blocked;
-			}
-			co_await [] -> lazy::task<> {
-				std::println("A-");
-				co_yield lazy::blocked;
-			}();
-			for(auto i{0}; i < 2; ++i) {
-				std::println("a{}", i + 3);
-				co_yield lazy::blocked;
-			}
-		}());
-		tasks.emplace_back([] -> lazy::task<> {
-			for(auto i{0}; i < 3; ++i) {
-				std::println("b{}", i);
-				co_yield lazy::blocked;
-			}
-		}());
-		tasks.emplace_back([] -> lazy::task<> {
-			for(auto i{0}; i < 7; ++i) {
-				std::println("c{}", i);
-				co_yield lazy::blocked;
-			}
-		}());
-
-		co_await lazy::all_of(std::move(tasks));
-	}()};
-#if 1
-	for(auto i{0}; i < 9; ++i) {
-		REQUIRE(r.wait_for(0ms) != lazy::state::done);
-		std::println("====");
-	}
-	REQUIRE(r.wait_for(0ms) == lazy::state::done);
-#else
-	while(not r.done()) r.wait();
-#endif
-}
-
-TEST_CASE("all_of compile-time single", "[all_of]") {
-	lazy::root r{[] -> lazy::task<int> {
-		co_return co_await lazy::all_of(
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<int> { co_return 100; }(),
-			[] -> lazy::task<> { co_return; }()
-		);
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result() == 100);
-}
-
-TEST_CASE("all_of compile-time multiple", "[all_of]") {
-	lazy::root r{[] -> lazy::task<double> {
-		auto [a, b] = co_await lazy::all_of(
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<int> { co_return 100; }(),
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<double> { co_return 3.14; }(),
-			[] -> lazy::task<> { co_return; }()
-		);
-		co_return a * b;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result() == 314.0);
-}
-
-TEST_CASE("all_of counted compile-time", "[all_of]") {
-	lazy::root r{[] -> lazy::task<> {
-		auto [a, b, c] = co_await lazy::all_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
-		REQUIRE(a == 0);
-		REQUIRE(b == 1);
-		REQUIRE(c == 2);
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-}
-
-TEST_CASE("all_of counted runtime", "[all_of]") {
-	lazy::root r{[] -> lazy::task<> {
-		auto result = co_await lazy::all_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
-		REQUIRE(result.size() == 3);
-		REQUIRE(result[0] == 0);
-		REQUIRE(result[1] == 1);
-		REQUIRE(result[2] == 2);
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-}
-
-TEST_CASE("any_of compile-time", "[any_of]") {
-	lazy::root r{[] -> lazy::task<int> {
-		co_return co_await lazy::any_of(
-			[] -> lazy::task<int> {
-				for(;;) co_yield lazy::progress;
-				co_return 0;
-			}(),
-			[] -> lazy::task<int> {
-				co_return co_await [] -> lazy::task<int> {
-					for(;;) co_yield lazy::progress;
-					co_return 1;
-				}();
-			}(),
-			[] -> lazy::task<int> {
-				co_return 2;
-			}()
-		);
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result() == 2);
-}
-
-TEST_CASE("any_of runtime", "[any_of]") {
-	lazy::root r{[] -> lazy::task<int> {
-		std::vector<lazy::task<int>> tasks;
-		tasks.emplace_back([] -> lazy::task<int> {
-			for(;;) co_yield lazy::progress;
-			co_return 0;
-		}());
-		tasks.emplace_back([] -> lazy::task<int> {
-			co_return co_await [] -> lazy::task<int> {
-				for(;;) co_yield lazy::progress;
-				co_return 1;
-			}();
-		}());
-		tasks.emplace_back([] -> lazy::task<int> {
-			co_return 2;
-		}());
-
-		co_return co_await lazy::any_of(std::move(tasks));
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result() == 2);
-}
-
-TEST_CASE("any_of compile-time void, void", "[any_of]") {
-	lazy::root r{[] -> lazy::task<> {
-		co_await lazy::any_of(
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<> { co_return; }()
-		);
-		co_return;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-}
-
-TEST_CASE("any_of compile-time void, int", "[any_of]") {
-	lazy::root r{[] -> lazy::task<std::optional<int>> {
-		auto tmp = co_await lazy::any_of(
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<int> { co_return 100; }()
-		);
-		static_assert(std::is_same_v<decltype(tmp), std::optional<int>>);
-		co_return tmp;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result());
-}
-
-TEST_CASE("any_of compile-time int, int", "[any_of]") {
-	lazy::root r{[] -> lazy::task<int> {
-		auto tmp = co_await lazy::any_of(
-			[] -> lazy::task<int> { co_return 10; }(),
-			[] -> lazy::task<int> { co_return 100; }()
-		);
-		static_assert(std::is_same_v<decltype(tmp), int>);
-		co_return tmp;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE((r.result() == 10 or r.result() == 100));
-}
-
-namespace {
-	template<typename... Lambdas>
-	struct lambda_visitor : Lambdas... {
-		using Lambdas::operator()...;
-	};
-}
-
-TEST_CASE("any_of compile-time int, double", "[any_of]") {
-	lazy::root r{[] -> lazy::task<std::variant<int, double>> {
-		auto tmp = co_await lazy::any_of(
-			[] -> lazy::task<int> { co_return 100; }(),
-			[] -> lazy::task<double> { co_return 3.14; }()
-		);
-		static_assert(std::is_same_v<decltype(tmp), std::variant<int, double>>);
-		co_return tmp;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result());
-	std::visit(lambda_visitor{
-		[](int val) { REQUIRE(val == 100); },
-		[](double val) { REQUIRE(val == 3.14); }
-	}, *r.result());
-}
-
-TEST_CASE("any_of compile-time void, int, double", "[any_of]") {
-	lazy::root r{[] -> lazy::task<std::optional<std::variant<int, double>>> {
-		auto tmp = co_await lazy::any_of(
-			[] -> lazy::task<> { co_return; }(),
-			[] -> lazy::task<int> { co_return 100; }(),
-			[] -> lazy::task<double> { co_return 3.14; }()
-		);
-		static_assert(std::is_same_v<decltype(tmp), std::optional<std::variant<int, double>>>);
-		co_return tmp;
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-	REQUIRE(r.result());
-	if(*r.result()) {
-		std::visit(lambda_visitor{
-			[](int val) { REQUIRE(val == 100); },
-			[](double val) { REQUIRE(val == 3.14); }
-		}, **r.result());
-	}
-}
-
-TEST_CASE("any_of counted compile-time", "[any_of]") {
-	lazy::root r{[] -> lazy::task<> {
-		auto tmp = co_await lazy::any_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
-		static_assert(std::is_same_v<decltype(tmp), std::size_t>);
-		REQUIRE((tmp == 0 or tmp == 1 or tmp == 2));
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-}
-
-TEST_CASE("any_of counted runtime", "[any_of]") {
-	lazy::root r{[] -> lazy::task<> {
-		auto tmp = co_await lazy::any_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; });
-		static_assert(std::is_same_v<decltype(tmp), std::size_t>);
-		REQUIRE((tmp == 0 or tmp == 1 or tmp == 2));
-	}()};
-
-	REQUIRE(r.wait() == lazy::state::done);
-}
+//! @}
 
