@@ -236,6 +236,9 @@ namespace lazy {
 	};
 
 	//! @brief tag to time wall clock of execution of a @c task
+	//! @note the return type @c R of @c co_await timed{task<T>} is:
+	//! If @code{.cpp} T == void @endcode then: @code{.cpp} R == duration @endcode ,
+	//! Else: @code{.cpp} R == std::pair<duration, T> @endcode
 	template<typename T>
 	struct timed final { task<T> t; };
 
