@@ -1435,12 +1435,14 @@ namespace lazy {
 			return wait_with([&]() noexcept { return Clock::now() >= time; });
 		}
 
+		template<typename Func>
+		requires requires(const Func f) { { f() } noexcept -> std::same_as<bool>; }
 		auto wait_with(
-			compat::function_ref<bool() const noexcept> suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
+			Func suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
 		) -> state pre(not valueless()) {
 			if(done()) return state::done;
 			auto & rd{ptr->rd};
-			rd.suspend = suspend;
+			rd.suspend = compat::function_ref<bool() const noexcept>{suspend};
 			rd.reset_state();
 			auto & timer{ptr->timer};
 			timer.start();
