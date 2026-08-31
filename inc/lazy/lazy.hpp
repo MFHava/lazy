@@ -352,23 +352,15 @@ namespace lazy {
 			std::coroutine_handle<> top;
 			compat::function_ref<bool() const noexcept> suspend{std::false_type{}};
 		private:
-			//! @attention tagged "union"
-			//! LSB set => suspended due to being blocked
-			//! else:
-			//!   if equal to 0 => suspended without value
-			//!   else => pointer to last result available to root
-			std::uintptr_t data;
+			bool blocked_{false}, has_result_{false};
 		public:
-			void reset_state() noexcept { data = 0; }
+			void reset_state() noexcept { blocked_ = has_result_ = false; }
 
-			void set_result(void * ptr) pre(data == 0) { data = reinterpret_cast<std::uintptr_t>(ptr); }
-			void set_blocked() pre(data == 0) { data = 1U; }
+			void set_blocked() noexcept { blocked_ = true; }
+			auto blocked() const noexcept -> bool { return blocked_; }
 
-			auto result() const noexcept -> void * {
-				if(blocked()) return nullptr;
-				return reinterpret_cast<void *>(data);
-			}
-			auto blocked() const noexcept -> bool { return data & 1U; }
+			void set_has_result() noexcept { has_result_ = true; }
+			auto has_result() const noexcept -> bool { return has_result_; }
 		};
 
 		class promise_base;
@@ -573,10 +565,7 @@ namespace lazy {
 		class task_promise : public promise_base {
 			union { T result; };
 			bool initialized{false};
-			bool update_suspension_state{false};
 		public:
-			void set_update_suspension_state() noexcept { update_suspension_state = true; }
-
 			task_promise() noexcept {}
 			task_promise(const task_promise &) =delete;
 			auto operator=(const task_promise &) -> task_promise & =delete;
@@ -586,7 +575,7 @@ namespace lazy {
 			void return_value(U && value) {
 				new(std::addressof(result)) T(std::forward<U>(value));
 				initialized = true;
-				if(update_suspension_state) this->get_root().set_result(std::addressof(result));
+				if(const auto nested{get_nested()}; not nested) get_root().set_has_result();
 			}
 
 			auto get_result() -> T & pre(initialized) { return result; }
@@ -594,9 +583,6 @@ namespace lazy {
 
 		template<>
 		struct task_promise<void> : promise_base {
-			static
-			void set_update_suspension_state() noexcept {}
-
 			static
 			void return_void() noexcept {}
 		};
@@ -1180,16 +1166,12 @@ namespace lazy {
 		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
 
 		class promise_type final : public internal::promise_base {
-			//! @attention tagged "union"
-			//! LSB set => yielding to @c root<generator> => must update @c root_data.ptr and suspend
-			//! else: address of coroutine_handle to yield to (must update @c ptr)
-			std::uintptr_t cont{0};
+			std::coroutine_handle<> cont;
 		public:
-			void set_update_suspension_state() pre(cont == 0) { cont = 1U; }
-			void set_continuation(std::coroutine_handle<> handle) pre(cont == 0) { cont = reinterpret_cast<std::uintptr_t>(handle.address()); }
-			auto get_continuation() const -> std::coroutine_handle<> pre(cont != 0) {
-				if(cont & 1U) return {};
-				return std::coroutine_handle<>::from_address(reinterpret_cast<void *>(cont));
+			void set_continuation(std::coroutine_handle<> handle) noexcept { cont = handle; }
+			auto get_continuation() const -> std::coroutine_handle<> {
+				if(cont) contract_assert(not cont.done());
+				return cont;
 			}
 
 			Result * ptr;
@@ -1207,12 +1189,10 @@ namespace lazy {
 					//! @note does not check for suspension, as we need to jump back to @c yield_target
 					auto await_suspend(std::coroutine_handle<promise_type> self) noexcept -> std::coroutine_handle<> {
 						auto & promise{self.promise()};
-						if(const auto cont{promise.get_continuation()}) {
-							contract_assert(not cont.done());
-							promise.ptr = std::addressof(val);
-							return cont;
-						} else {
-							promise.find_root().set_result(std::addressof(val));
+						promise.ptr = std::addressof(val);
+						if(const auto cont{promise.get_continuation()}) return cont;
+						else {
+							promise.find_root().set_has_result();
 							return std::noop_coroutine();
 						}
 					}
@@ -1228,12 +1208,10 @@ namespace lazy {
 					auto await_suspend(std::coroutine_handle<>) const noexcept { return continuation; }
 				};
 
-				if(const auto cont{get_continuation()}) {
-					contract_assert(not cont.done());
-					ptr = std::addressof(val);
-					return awaiter{{}, cont};
-				} else {
-					find_root().set_result(std::addressof(val));
+				ptr = std::addressof(val);
+				if(const auto cont{get_continuation()}) return awaiter{{}, cont};
+				else {
+					find_root().set_has_result();
 					return awaiter{{}, std::noop_coroutine()};
 				}
 			}
@@ -1473,8 +1451,15 @@ namespace lazy {
 		}
 
 		auto result() requires(not std::is_void_v<Result>) pre(not valueless()) {
-			if(const auto p{reinterpret_cast<Result *>(ptr->rd.result())}) return compat::optional_ref<Result>{*p};
-			return compat::optional_ref<Result>{};
+			if(not ptr->rd.has_result()) return compat::optional_ref<Result>{};
+			else {
+				if constexpr(internal::task<Wrapper<Result>>) return compat::optional_ref<Result>(ptr->handle.promise().get_result());
+				else {
+					auto p{std::coroutine_handle<typename Wrapper<Result>::promise_type>::from_address(ptr->rd.top.address()).promise().ptr};
+					contract_assert(p);
+					return compat::optional_ref<Result>(*p);
+				}
+			}
 		}
 	private:
 		class timer_t final {
@@ -1504,7 +1489,6 @@ namespace lazy {
 				rd.top = handle;
 				auto & p{handle.promise()};
 				p.set_root(rd);
-				p.set_update_suspension_state(); //! @note for easier access, the result of returning/yielding to @c root should be placed in @c root_data
 			}
 
 			const log_level level;
