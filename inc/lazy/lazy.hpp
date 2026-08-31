@@ -25,6 +25,7 @@
 #include <source_location>
 
 //TODO: for all atomic operations: determine correct memory_order!
+//TODO: add more documentation
 
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
@@ -974,7 +975,7 @@ namespace lazy {
 										constexpr Dispatch disp[]{+[](Handles & h) -> Result {
 											auto & promise{std::get<I>(h).promise()};
 											if constexpr(requires { promise.get_result(); }) return std::move(promise.get_result());
-											else if constexpr(is_optional_v<Result>) return std::nullopt; //TODO: why is this code-path necessary??
+											else if constexpr(is_optional_v<Result>) return std::nullopt;
 											else static_assert(std::is_void_v<Result>);
 										}...};
 										return disp[index](handles);
@@ -1400,9 +1401,9 @@ namespace lazy {
 
 	template<template<typename> typename Wrapper, typename Result>
 	struct [[nodiscard]] root<Wrapper<Result>> final {
-		//TODO: [[deprecated]]
+		explicit
 		root(Wrapper<Result> w) pre(not w.valueless()) : root{log_level::trace, std::move(w)} {}
-
+		explicit
 		root(log_level level, Wrapper<Result> w) pre(not w.valueless()) : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
 
 		auto valueless() const noexcept -> bool {
@@ -1436,7 +1437,7 @@ namespace lazy {
 		}
 
 		template<typename Func>
-		requires requires(const Func f) { { f() } noexcept -> std::same_as<bool>; }
+		requires requires(const Func & f) { { f() } noexcept -> std::same_as<bool>; }
 		auto wait_with(
 			Func suspend //!< [in] execution suspends when @c suspend returns @c true @attention once @c suspend has returned @c true it may not return @c false again
 		) -> state pre(not valueless()) {
@@ -1455,6 +1456,8 @@ namespace lazy {
 			return rd.blocked() ? state::blocked : state::suspended;
 		}
 
+		//! @returns an empty @c optional if no result is available
+		//! @attention the returned reference will dangle when the wrapped coroutine is resumed
 		auto result() requires(not std::is_void_v<Result>) pre(not valueless()) {
 			if(not ptr->rd.has_result()) return compat::optional_ref<Result>{};
 			else {
