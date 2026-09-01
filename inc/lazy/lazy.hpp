@@ -28,16 +28,16 @@
 //TODO: add more documentation
 
 //! @brief coroutine statements supported by all coroutine wrappers:
-//!  * @code{.cpp} co_yield progress; @endcode to yield control back from the coroutine to the caller
-//!  * @code{.cpp} co_yield blocked; @endcode to yield control back from the coroutine to the caller and signal that progress is not possible due to a synchronization primitive
-//!  * @code{.cpp} co_await task; @endcode block current coroutine until the awaited @c task is completed, then returns its result if any
-//!  * @code{.cpp} co_await [error|warning|info|debug]{fmt-string, args...}; @endcode create log of the respective severity
-//!  * @code{.cpp} co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if coroutine stack is executing with @c log_level::trace
-//!  * @code{.cpp} co_await get_identity; @endcode yields unique identification of coroutine stack
-//!  * @code{.cpp} co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
-//!  * @code{.cpp} co_await timed{task}; @endcode block this coroutine until the awaited @c task is completed, then returns the time it took to complete and its result if any
-//!  * @code{.cpp} for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
-//! @attention as of C++26 @code{.cpp} for co_await @endcode is not supported and must be expanded manually to implemented as @code{.cpp} for(auto it{co_await gen.begin()}; it != gen.end(); co_await ++it) ... @endcode
+//!  * @code co_yield progress; @endcode to yield control back from the coroutine to the caller
+//!  * @code co_yield blocked; @endcode to yield control back from the coroutine to the caller and signal that progress is not possible due to a synchronization primitive
+//!  * @code co_await task; @endcode block current coroutine until the awaited @c task is completed, then returns its result if any
+//!  * @code co_await [error|warning|info|debug]{fmt-string, args...}; @endcode create log of the respective severity
+//!  * @code co_await <dump>; @endcode where @c <dump> is derived from @c dump_base create dump entry if coroutine stack is executing with @c log_level::trace
+//!  * @code co_await get_identity; @endcode yields unique identification of coroutine stack
+//!  * @code co_await get_is_tracing; @endcode yields @c true if coroutine stack is executing with @c log_level::trace
+//!  * @code co_await timed{task}; @endcode block this coroutine until the awaited @c task is completed, then returns the time it took to complete and its result if any
+//!  * @code for co_await(<type> val : gen) { ... } @endcode block this task until awaited generator yields next value
+//! @attention as of C++26 @code for co_await @endcode is not supported and must be expanded manually to implemented as @code for(auto it{co_await gen.begin()}; it != gen.end(); co_await ++it) ... @endcode
 namespace lazy {}
 
 #ifndef __cpp_contracts
@@ -232,14 +232,14 @@ namespace lazy {
 		//! @note due to the way coroutines are expanded, this may not be an exact location
 		std::source_location location;
 		log_level level;
-		//! @note if @code{.cpp} level == log_level::trace @endcode, then @c data is: @c [filename\0content], else it is the log mesage
+		//! @note if @code level == log_level::trace @endcode, then @c data is: @c [filename\0content], else it is the log mesage
 		std::string data;
 	};
 
 	//! @brief tag to time wall clock of execution of a @c task
 	//! @note the return type @c R of @c co_await timed{task<T>} is:
-	//! If @code{.cpp} T == void @endcode then: @code{.cpp} R == duration @endcode ,
-	//! Else: @code{.cpp} R == std::pair<duration, T> @endcode
+	//! If @code T == void @endcode then: @code R == duration @endcode ,
+	//! Else: @code R == std::pair<duration, T> @endcode
 	template<typename T>
 	struct timed final { task<T> t; };
 
@@ -431,7 +431,7 @@ namespace lazy {
 			class push_awaiter final : public std::suspend_always {
 				nested_info n;
 				unique_handle<T> other;
-				//! @note only accessed when @code{.cpp} Timed == true @endcode
+				//! @note only accessed when @code Timed == true @endcode
 				duration elapsed;
 			public:
 				push_awaiter(unique_handle<T> other) pre(other and not other.done()) : other{std::move(other)} {}
@@ -457,7 +457,7 @@ namespace lazy {
 					}
 
 					auto & promise{other.promise()};
-					if constexpr(requires { promise.get_result(); }) { //! @note @c task<T> where @code{.cpp} T != void @endcode
+					if constexpr(requires { promise.get_result(); }) { //! @note @c task<T> where @code T != void @endcode
 						if constexpr(Timed) return std::make_pair(elapsed, std::move(promise.get_result()));
 						else return std::move(promise.get_result());
 					} else { //! @note @c generator or @c task<void>
@@ -555,7 +555,7 @@ namespace lazy {
 				return allocate(size, std::addressof(args)...);
 			}
 
-			//! @note must handle all versions of @code{.cpp} operator new() @endcode
+			//! @note must handle all versions of @code operator new() @endcode
 			static
 			void operator delete(void * ptr, std::size_t size) noexcept {
 				std::uintptr_t d;
@@ -812,7 +812,7 @@ namespace lazy {
 		private:
 			using tmp0 = std::tuple<task_result_t<Ts>...>;
 			using tmp1 = tuple_erase_void_type<tmp0>;
-			using tmp2 = std::conditional_t<(std::tuple_size_v<tmp1> == 0), std::tuple<void>, tmp1>; //! @note prevent @code{.cpp} tuple_element_t<0, tmp1> @endcode from getting out of range
+			using tmp2 = std::conditional_t<(std::tuple_size_v<tmp1> == 0), std::tuple<void>, tmp1>; //! @note prevent @code tuple_element_t<0, tmp1> @endcode from getting out of range
 			using tmp3 = std::tuple_element_t<0, tmp2>;
 		public:
 			using type = std::conditional_t<(std::tuple_size_v<tmp1> > 1), tmp1, tmp3>;
@@ -868,7 +868,7 @@ namespace lazy {
 		};
 	}
 
-	//! @brief factory for @c tasks matching this signature: @code{.cpp} task<?>(std::allocator_arg_t, Alloc, std::size_t); @endcode
+	//! @brief factory for @c tasks matching this signature: @code task<?>(std::allocator_arg_t, Alloc, std::size_t); @endcode
 	template<typename F, typename Alloc>
 	concept allocator_aware_task_factory = requires(F f, Alloc alloc, std::size_t index) {
 		{ f(std::allocator_arg, alloc, index) } -> internal::task;
@@ -924,9 +924,9 @@ namespace lazy {
 		//! @note the return type @c R of the returned @c task is:
 		//! Let @c W... be the result types of @c Tasks
 		//! Let @c U... be @c W... with all instances of @c void removed
-		//! If @code{.cpp} sizeof...(U) == 0 @endcode then @code{.cpp} R == void @endcode ,
-		//! else if @code{.cpp} sizeof...(U) == 1 @endcode then @code{.cpp} R == U @endcode ,
-		//! else @code{.cpp} R == std::tuple<U...> @endcode
+		//! If @code sizeof...(U) == 0 @endcode then @code R == void @endcode ,
+		//! else if @code sizeof...(U) == 1 @endcode then @code R == U @endcode ,
+		//! else @code R == std::tuple<U...> @endcode
 		template<typename Alloc, typename... Tasks>
 		requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
 		static
@@ -966,8 +966,8 @@ namespace lazy {
 		//! @returns a @c task managing the wrapped @c tasks, returning their results if any
 		//! @note the return type @c R of the returned @c task is:
 		//! Let @c T be the result type of @c Tasks
-		//! If @code{.cpp} T == void @endcode then @code{.cpp} R == T @endcode ,
-		//! otherwise @code{.cpp} R == std::vector<T, Alloc> @endcode
+		//! If @code T == void @endcode then @code R == T @endcode ,
+		//! otherwise @code R == std::vector<T, Alloc> @endcode
 		template<typename Alloc, std::ranges::forward_range Tasks>
 		requires internal::task<std::ranges::range_value_t<Tasks>>
 		static
@@ -1051,7 +1051,7 @@ namespace lazy {
 		auto run(std::atomic<bool> & stop, std::span<fork_data> datas) {
 			std::atomic<bool> blocked{false}, suspended{false}, done{false};
 
-			//! @note only relevant for @code{.cpp} not IgnoreExceptions @endcode
+			//! @note only relevant for @code not IgnoreExceptions @endcode
 			std::atomic<bool> error{false};
 			std::exception_ptr eptr; //! @note guarded by @c error
 
@@ -1088,9 +1088,9 @@ namespace lazy {
 		//! @note the return type @c R of the returned @c task is:
 		//! Let @c V... be the result types of @c Tasks
 		//! Let @c U... be @c V... with all duplicated types removed
-		//! If @code{.cpp} sizeof...(U) == 1 @endcode then @code{.cpp} R == U @endcode ,
-		//! Else: @code{.cpp} R == std::variant<U...> @endcode ,
-		//! @attention @code{.cpp} V... != void @endcode
+		//! If @code sizeof...(U) == 1 @endcode then @code R == U @endcode ,
+		//! Else: @code R == std::variant<U...> @endcode ,
+		//! @attention @code V... != void @endcode
 		template<typename Alloc, bool IgnoreExceptions, typename... Tasks>
 		requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
 		static
@@ -1143,8 +1143,8 @@ namespace lazy {
 		//! @returns a @c task managing the wrapped @c tasks, returning their results
 		//! @note the return type @c R of the returned @c task is:
 		//! Let @c T be the result type of @c Tasks
-		//! @code{.cpp} R == T @endcode ,
-		//! @attention @code{.cpp} T != void @endcode
+		//! @code R == T @endcode ,
+		//! @attention @code T != void @endcode
 		template<typename Alloc, bool IgnoreExceptions, std::ranges::forward_range Tasks>
 		requires internal::task<std::ranges::range_value_t<Tasks>>
 		static
@@ -1227,7 +1227,7 @@ namespace lazy {
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
 	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_return [val]; @endcode to terminate the task and optionally return a value to the caller
+	//!  * @code co_return [val]; @endcode to terminate the task and optionally return a value to the caller
 	template<typename Result = void>
 	struct [[nodiscard]] task final {
 		static_assert(std::is_void_v<Result> or (std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>));
@@ -1257,9 +1257,9 @@ namespace lazy {
 	//! @brief cooperative synchronous(!) recursive coroutine generator
 	//! @tparam Result return type of the generator
 	//! additional supported coroutine statements:
-	//!  * @code{.cpp} co_yield val; @endcode yield value to caller of generator
-	//!  * @code{.cpp} co_yield elements_of{generator}; @endcode yield elements of @c generator
-	//!  * @code{.cpp} co_return; @endcode to terminate the generator
+	//!  * @code co_yield val; @endcode yield value to caller of generator
+	//!  * @code co_yield elements_of{generator}; @endcode yield elements of @c generator
+	//!  * @code co_return; @endcode to terminate the generator
 	template<typename Result>
 	struct [[nodiscard]] generator final {
 		static_assert(std::is_object_v<Result> and std::is_same_v<std::decay_t<Result>, Result>);
