@@ -25,7 +25,6 @@
 #include <source_location>
 
 //TODO: for all atomic operations: determine correct memory_order!
-//TODO: add more documentation
 
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code co_yield progress; @endcode to yield control back from the coroutine to the caller
@@ -379,7 +378,7 @@ namespace lazy {
 			//! @attention tagged "union"
 			//! LSB set => nested_info *
 			//! LSB + 1 set => root_data * (=> this promise is at bottom of "stack")
-			//! else @c void* obtained from @c std::coroutine_handle<>::address of top-coroutine
+			//! else @code void * @endcode obtained from @code std::coroutine_handle<>::address @endcode of top-coroutine
 			std::uintptr_t data;
 		public:
 			void set_nested(nested_info & nested) { data = reinterpret_cast<std::uintptr_t>(&nested) | 1U; }
@@ -653,7 +652,7 @@ namespace lazy {
 	constexpr
 	internal::get_is_tracing_t get_is_tracing;
 
-	//! @brief awaiter to yield progress
+	//! @brief awaiter to check for suspension
 	inline
 	constexpr
 	internal::progress_t progress;
@@ -721,16 +720,6 @@ namespace lazy {
 			return rd.suspend();
 		}
 	};
-
-	//! @brief root of coroutine stack
-	//! @tparam Wrapper type of wrapper that is managed
-	template<typename Wrapper>
-	struct root;
-
-	template<typename Wrapper>
-	root(Wrapper) -> root<Wrapper>;
-	template<typename Wrapper>
-	root(log_level, Wrapper) -> root<Wrapper>;
 
 	//! @brief state of coroutine stack when waiting ends
 	enum class state {
@@ -1219,10 +1208,19 @@ namespace lazy {
 
 	//! @brief execute multiple @c tasks in parallel, waiting for any one of them running to completion
 	//! @attention in case a @c task ends with an exception, it is ignored and execution continues for the remaining @c tasks
-	//template<bool IgnoreExceptions = true>
 	inline
 	constexpr
 	any_of_t any_of;
+
+	//! @brief root of coroutine stack
+	//! @tparam Wrapper type of wrapper that is managed
+	template<typename Wrapper>
+	struct root;
+
+	template<typename Wrapper>
+	root(Wrapper) -> root<Wrapper>;
+	template<typename Wrapper>
+	root(log_level, Wrapper) -> root<Wrapper>;
 
 	//! @brief cooperative synchronous(!) recursive coroutine task
 	//! @tparam Result return type of the task
@@ -1501,11 +1499,11 @@ namespace lazy {
 		explicit
 		root(log_level level, Wrapper<Result> w) pre(not w.valueless()) : ptr{std::make_unique<data>(level, std::move(w.handle))} {}
 
+		//! @returns @c true iff @c *this manages a coroutine stack*
 		auto valueless() const noexcept -> bool {
-			if(ptr) {
-				contract_assert(ptr->handle);
-				return false;
-			} else return true;
+			if(not ptr) return true;
+			contract_assert(ptr->handle);
+			return false;
 		}
 
 		//! @returns the id of this coroutine stack, or a default-constructed id, if @c this is @c valueless
@@ -1514,23 +1512,33 @@ namespace lazy {
 			else return ptr->rd.get_id();
 		}
 
+		//! @returns time duration the managed coroutine stack was active
 		auto elapsed() const -> duration pre(not valueless()) { return ptr->timer.elapsed(); }
 
+		//! @returns @c span of all @c log_messages produced by the managed coroutine stack
+		//! @attention the returned reference will dangle when the wrapped coroutine is resumed and creates new log entries
 		auto log() const -> std::span<const log_message> pre(not valueless()) { return ptr->messages; }
 
+		//! @returns @c true iff the coroutine stack is finished
 		auto done() const -> bool pre(not valueless()) { return ptr->handle.done(); }
 
+		//! @brief execute coroutine stack
 		auto wait() -> state pre(not valueless()) { return wait_with([]() noexcept { return false; }); }
 
+		//! @brief execute coroutine stack with duration it is allowed to run
+		//! @note suspension happens cooperatively, so it may take longer than @c duration for the coroutine stack to suspend
 		template<typename Rep, typename Period>
 		auto wait_for(const std::chrono::duration<Rep, Period> & duration) -> state pre(not valueless()) { return wait_until(clock::now() + duration); }
 
+		//! @brief execute coroutine stack with time point at which it should be suspended
+		//! @note suspension happens cooperatively, so it may take longer than @code time - now @endcode for the coroutine stack to suspend
 		template<typename Clock, typename Duration>
 		auto wait_until(const std::chrono::time_point<Clock, Duration> & time) -> state pre(not valueless()) {
 			static_assert(compat::is_clock_v<Clock>);
 			return wait_with([&]() noexcept { return Clock::now() >= time; });
 		}
 
+		//! @brief execute coroutine stack with user-callback that controls suspension
 		template<typename Func>
 		requires requires(const Func & f) { { f() } noexcept -> std::same_as<bool>; }
 		auto wait_with(
