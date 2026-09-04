@@ -1048,6 +1048,7 @@ namespace lazy {
 	constexpr
 	all_of_t all_of;
 
+	template<exception_mode Mode>
 	class any_of_t final {
 		struct fork_data final {
 			std::coroutine_handle<> bottom; //! @note default-constructed == done and yielded result to caller
@@ -1055,7 +1056,6 @@ namespace lazy {
 			std::exception_ptr eptr;
 		};
 
-		template<exception_mode Mode>
 		static
 		auto run(std::atomic<bool> & stop, std::span<fork_data> datas) {
 			std::atomic<bool> blocked{false}, suspended{false}, done{false};
@@ -1094,10 +1094,10 @@ namespace lazy {
 		//! If @code Mode != exception_mode::yield @endcode then @code R == S @endcode
 		//! else @code R == std::expected<S, std::exception_ptr> @endcode
 		//! @attention @code V... != void @endcode
-		template<typename Alloc, exception_mode Mode, typename... Tasks>
+		template<typename Alloc, typename... Tasks>
 		requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
 		static
-		auto operator()(std::allocator_arg_t, Alloc, std::integral_constant<exception_mode, Mode>, Tasks... tasks) -> generator<internal::compute_any_of_result_t<Mode, Tasks...>> pre((not tasks.valueless()) and ...) {
+		auto operator()(std::allocator_arg_t, Alloc, Tasks... tasks) -> generator<internal::compute_any_of_result_t<Mode, Tasks...>> pre((not tasks.valueless()) and ...) {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
@@ -1113,7 +1113,7 @@ namespace lazy {
 
 			using Result = internal::compute_any_of_result_t<Mode, Tasks...>;
 			for(;; stop = false) {
-				switch(run<Mode>(stop, datas)) {
+				switch(run(stop, datas)) {
 					case state::suspended: co_yield progress; break;
 					case state::blocked: co_yield blocked; break;
 					case state::done: {
@@ -1144,10 +1144,10 @@ namespace lazy {
 			}
 		}
 
-		template<exception_mode Mode, typename... Tasks>
+		template<typename... Tasks>
 		requires(sizeof...(Tasks) >= 2 and (internal::task<Tasks> and ...))
 		static
-		auto operator()(std::integral_constant<exception_mode, Mode> mode, Tasks... tasks) { return any_of_t{}(std::allocator_arg, std::allocator<char>{}, mode, std::move(tasks)...); }
+		auto operator()(Tasks... tasks) { return any_of_t{}(std::allocator_arg, std::allocator<char>{},  std::move(tasks)...); }
 
 		//! @returns a @c task managing the wrapped @c tasks, returning their results
 		//! @note the return type @c R of the returned @c task is:
@@ -1155,10 +1155,10 @@ namespace lazy {
 		//! If @code Mode != exception_mode::yield @endcode then @code R == T @endcode
 		//! else @code R == std::expected<T, std::exception_ptr> @endcode
 		//! @attention @code T != void @endcode
-		template<typename Alloc, exception_mode Mode, std::ranges::forward_range Tasks>
+		template<typename Alloc, std::ranges::forward_range Tasks>
 		requires internal::task<std::ranges::range_value_t<Tasks>>
 		static
-		auto operator()(std::allocator_arg_t, Alloc alloc, std::integral_constant<exception_mode, Mode>, Tasks tasks) -> generator<internal::compute_any_of_result_t<Mode, Tasks, Alloc>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
+		auto operator()(std::allocator_arg_t, Alloc alloc, Tasks tasks) -> generator<internal::compute_any_of_result_t<Mode, Tasks, Alloc>> pre(std::ranges::none_of(tasks, [](const auto & t) { return t.valueless(); })) {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
@@ -1173,7 +1173,7 @@ namespace lazy {
 			}
 
 			for(;; stop = false) {
-				switch(run<Mode>(stop, datas)) {
+				switch(run(stop, datas)) {
 					case state::suspended: co_yield progress; break;
 					case state::blocked: co_yield blocked; break;
 					case state::done: {
@@ -1193,50 +1193,49 @@ namespace lazy {
 			}
 		}
 
-		template<exception_mode Mode, std::ranges::forward_range Tasks>
+		template<std::ranges::forward_range Tasks>
 		requires internal::task<std::ranges::range_value_t<Tasks>>
 		static
-		auto operator()(std::integral_constant<exception_mode, Mode> mode, Tasks tasks) { return any_of_t{}(std::allocator_arg, std::allocator<char>{}, mode, std::move(tasks)); }
+		auto operator()(Tasks tasks) { return any_of_t{}(std::allocator_arg, std::allocator<char>{}, std::move(tasks)); }
 
 		//! @brief create multiple @c tasks and execute them in parallel
 		//! @tparam N count of @c tasks to create
-		template<typename Alloc, std::integral T, T N, exception_mode Mode>
+		template<typename Alloc, std::integral T, T N>
 		requires(N >= 2)
 		static
-		auto operator()(std::allocator_arg_t, Alloc alloc, std::integral_constant<exception_mode, Mode> mode, std::integral_constant<T, N>, allocator_aware_task_factory<Alloc> auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return any_of_t{}(std::allocator_arg, alloc, mode, std::invoke(f, std::allocator_arg, alloc, I)...); }(std::make_index_sequence<N>{}); }
+		auto operator()(std::allocator_arg_t, Alloc alloc, std::integral_constant<T, N>, allocator_aware_task_factory<Alloc> auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return any_of_t{}(std::allocator_arg, alloc, std::invoke(f, std::allocator_arg, alloc, I)...); }(std::make_index_sequence<N>{}); }
 
-		template<std::integral T, T N, exception_mode Mode>
+		template<std::integral T, T N>
 		requires(N >= 2)
 		static
-		auto operator()(std::integral_constant<exception_mode, Mode> mode, std::integral_constant<T, N>, task_factory auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return any_of_t{}(mode, std::invoke(f, I)...); }(std::make_index_sequence<N>{}); }
+		auto operator()(std::integral_constant<T, N>, task_factory auto f) { return [&]<auto... I>(std::index_sequence<I...>) { return any_of_t{}(std::invoke(f, I)...); }(std::make_index_sequence<N>{}); }
 
 		//! @brief create multiple @c tasks and execute them in parallel
-		template<typename Alloc, exception_mode Mode>
+		template<typename Alloc>
 		static
-		auto operator()(std::allocator_arg_t, Alloc alloc, std::integral_constant<exception_mode, Mode> mode, std::size_t count, allocator_aware_task_factory<Alloc> auto f) {
+		auto operator()(std::allocator_arg_t, Alloc alloc, std::size_t count, allocator_aware_task_factory<Alloc> auto f) {
 			using Task = decltype(f(std::allocator_arg, alloc, std::size_t{}));
 			std::vector<Task, typename std::allocator_traits<Alloc>::template rebind_alloc<Task>> tasks(alloc);
 			tasks.reserve(count);
 			for(std::size_t i{0}; i < count; ++i) tasks.emplace_back(f(std::allocator_arg, alloc, i));
-			return any_of_t{}(std::allocator_arg, alloc, mode, std::move(tasks));
+			return any_of_t{}(std::allocator_arg, alloc, std::move(tasks));
 		}
 
-		template<exception_mode Mode>
 		static
-		auto operator()(std::integral_constant<exception_mode, Mode> mode, std::size_t count, task_factory auto f) {
+		auto operator()(std::size_t count, task_factory auto f) {
 			std::vector<decltype(f(std::size_t{}))> tasks;
 			tasks.reserve(count);
 			for(std::size_t i{0}; i < count; ++i) tasks.emplace_back(f(i));
-			return any_of_t{}(mode, std::move(tasks));
+			return any_of_t{}(std::move(tasks));
 		}
 	};
 
 	//! @brief execute multiple @c tasks in parallel, waiting for any one of them running to completion
 	//! @tparam Mode controls how exceptions are handled
 	//! @attention in case a @c task ends with an exception, it is ignored and execution continues for the remaining @c tasks
-	inline
+	template<exception_mode Mode>
 	constexpr
-	any_of_t any_of;
+	any_of_t<Mode> any_of;
 
 	//! @brief root of coroutine stack
 	//! @tparam Wrapper type of wrapper that is managed
@@ -1270,8 +1269,9 @@ namespace lazy {
 		root<task>;
 		friend
 		all_of_t;
+		template<exception_mode>
 		friend
-		any_of_t;
+		class any_of_t;
 
 		task(std::coroutine_handle<promise_type> handle) noexcept : handle{handle} {}
 
@@ -1472,7 +1472,7 @@ namespace lazy {
 		static_assert(atomic_t::is_always_lock_free);
 		atomic_t state;
 
-		static
+ 		static
 		constexpr
 		std::uint64_t write_locked{std::uint64_t{1} << 63};
 	public:
