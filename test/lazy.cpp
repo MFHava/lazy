@@ -327,7 +327,7 @@ TEST_CASE("all_of runtime blocked", "[all_of]") {
 //! @defgroup any_of Waiting For One of Many Tasks
 //! @{
 TEST_CASE("any_of compile-time", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>,
 		[] -> lazy::task<int> {
 			co_yield wait_for(1ms);
 			co_return 0;
@@ -370,7 +370,7 @@ TEST_CASE("any_of runtime", "[any_of]") {
 		co_return 2;
 	}());
 
-	lazy::root r{lazy::any_of(lazy::cw<true>, std::move(tasks))};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, std::move(tasks))};
 
 	REQUIRE(r.wait() == lazy::state::suspended);
 	REQUIRE(r.result() == 2);
@@ -382,7 +382,7 @@ TEST_CASE("any_of runtime", "[any_of]") {
 }
 
 TEST_CASE("any_of compile-time int, int", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>,
 		[] -> lazy::task<int> { co_return 10; }(),
 		[] -> lazy::task<int> { co_return 100; }()
 	)};
@@ -400,7 +400,7 @@ TEST_CASE("any_of compile-time int, int", "[any_of]") {
 }
 
 TEST_CASE("any_of compile-time int, double", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>,
 		[] -> lazy::task<int> { co_return 100; }(),
 		[] -> lazy::task<double> { co_return 3.14; }()
 	)};
@@ -422,7 +422,7 @@ TEST_CASE("any_of compile-time int, double", "[any_of]") {
 }
 
 TEST_CASE("any_of counted compile-time", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>, lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
 	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::size_t>);
 
 	std::vector<std::size_t> tmp;
@@ -432,7 +432,7 @@ TEST_CASE("any_of counted compile-time", "[any_of]") {
 }
 
 TEST_CASE("any_of counted runtime", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>, 3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, 3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
 	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::size_t>);
 
 	std::vector<std::size_t> tmp;
@@ -443,7 +443,7 @@ TEST_CASE("any_of counted runtime", "[any_of]") {
 }
 
 TEST_CASE("any_of compile-time throw ignored without any results", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>,
 		[] -> lazy::task<int> {
 			throw std::logic_error{"This shouldn't propagate"};
 			co_return 0;
@@ -460,7 +460,7 @@ TEST_CASE("any_of compile-time throw ignored without any results", "[any_of]") {
 }
 
 TEST_CASE("any_of compile-time throw ignored after result", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>,
 		[] -> lazy::task<int> {
 			throw std::logic_error{"This shouldn't propagate"};
 			co_return 0;
@@ -497,7 +497,7 @@ TEST_CASE("any_of runtime throw ignored without any results", "[any_of]") {
 		co_return 0;
 	}());
 
-	lazy::root r{lazy::any_of(lazy::cw<true>, std::move(tasks))};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, std::move(tasks))};
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
@@ -520,14 +520,14 @@ TEST_CASE("any_of runtime throw ignored after result", "[any_of]") {
 		co_return 10;
 	}());
 
-	lazy::root r{lazy::any_of(lazy::cw<true>, std::move(tasks))};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, std::move(tasks))};
 	REQUIRE(r.wait() == lazy::state::suspended);
 	REQUIRE(r.result() == 10);
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
 TEST_CASE("any_of compile-time throw not ignored without any results", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<false>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::rethrow>,
 		[] -> lazy::task<int> {
 			throw std::logic_error{"Either this should propagate"};
 			co_return 0;
@@ -544,7 +544,7 @@ TEST_CASE("any_of compile-time throw not ignored without any results", "[any_of]
 }
 
 TEST_CASE("any_of compile-time throw not ignored after result", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<false>,
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::rethrow>,
 		[] -> lazy::task<int> {
 			co_yield wait_for{10ms};
 			throw std::logic_error{"This should propagate"};
@@ -580,7 +580,7 @@ TEST_CASE("any_of runtime throw not ignored without any results", "[any_of]") {
 		co_return 0;
 	}());
 
-	lazy::root r{lazy::any_of(lazy::cw<false>, std::move(tasks))};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::rethrow>, std::move(tasks))};
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
@@ -602,14 +602,120 @@ TEST_CASE("any_of runtime throw not ignored after result", "[any_of]") {
 		co_return 10;
 	}());
 
-	lazy::root r{lazy::any_of(lazy::cw<false>, std::move(tasks))};
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::rethrow>, std::move(tasks))};
 	REQUIRE(r.wait() == lazy::state::suspended);
 	REQUIRE(r.result() == 10);
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
+TEST_CASE("any_of compile-time throw yielded without any results", "[any_of]") {
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::yield>,
+		[] -> lazy::task<int> {
+			throw std::logic_error{"Either this should propagate"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_yield lazy::progress;
+			co_yield wait_for{10ms};
+			throw std::logic_error{"Or this should propagagte"};
+			co_return 0;
+		}()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());	
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of compile-time throw yielded after result", "[any_of]") {
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::yield>,
+		[] -> lazy::task<int> {
+			co_yield wait_for{10ms};
+			throw std::logic_error{"This should propagate"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_yield lazy::progress;
+			co_yield wait_for{10ms};
+			co_yield wait_for{10ms};
+			throw std::runtime_error{"This shouldn't be reached"};
+			co_return 0;
+		}(),
+		[] -> lazy::task<int> {
+			co_return 10;
+		}()
+	)};
+
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result() == 10);
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());	
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of runtime throw yielded without any results", "[any_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> {
+		throw std::logic_error{"Either this should propagate"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield lazy::progress;
+		co_yield wait_for{10ms};
+		throw std::logic_error{"Or this should propagagte either"};
+		co_return 0;
+	}());
+
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::yield>, std::move(tasks))};
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());	
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
+TEST_CASE("any_of runtime throw yielded after result", "[any_of]") {
+	std::vector<lazy::task<int>> tasks;
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield wait_for{10ms};
+		throw std::logic_error{"This should propagate"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_yield lazy::progress;
+		co_yield wait_for{10ms};
+		co_yield wait_for{10ms};
+		throw std::runtime_error{"This shouldn't be reached"};
+		co_return 0;
+	}());
+	tasks.emplace_back([] -> lazy::task<int> {
+		co_return 10;
+	}());
+
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::yield>, std::move(tasks))};
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result() == 10);
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());
+	REQUIRE(r.wait() == lazy::state::suspended);
+	REQUIRE(r.result());
+	REQUIRE(not *r.result());	
+	REQUIRE(r.wait() == lazy::state::done);
+}
+
 TEST_CASE("any_of compile-time blocked", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>, lazy::cw<2>, [](auto i) -> lazy::task<int> {
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, lazy::cw<2>, [](auto i) -> lazy::task<int> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
@@ -633,7 +739,7 @@ TEST_CASE("any_of compile-time blocked", "[any_of]") {
 }
 
 TEST_CASE("any_of runtime blocked", "[any_of]") {
-	lazy::root r{lazy::any_of(lazy::cw<true>, 2, [](auto i) -> lazy::task<int> {
+	lazy::root r{lazy::any_of(lazy::cw<lazy::exception_mode::ignore>, 2, [](auto i) -> lazy::task<int> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
