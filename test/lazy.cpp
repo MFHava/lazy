@@ -442,7 +442,7 @@ TEST_CASE("any_of counted runtime", "[any_of]") {
 
 }
 
-TEST_CASE("any_of compile-time throw ignored without any results", "[any_of]") {
+TEST_CASE("any_of compile-time ignore without any results", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(
 		[] -> lazy::task<int> {
 			throw std::logic_error{"This shouldn't propagate"};
@@ -459,7 +459,7 @@ TEST_CASE("any_of compile-time throw ignored without any results", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of compile-time throw ignored after result", "[any_of]") {
+TEST_CASE("any_of compile-time ignore after result", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(
 		[] -> lazy::task<int> {
 			throw std::logic_error{"This shouldn't propagate"};
@@ -484,7 +484,7 @@ TEST_CASE("any_of compile-time throw ignored after result", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of runtime throw ignored without any results", "[any_of]") {
+TEST_CASE("any_of runtime ignore without any results", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		throw std::logic_error{"This shouldn't propagate"};
@@ -501,7 +501,7 @@ TEST_CASE("any_of runtime throw ignored without any results", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of runtime throw ignored after result", "[any_of]") {
+TEST_CASE("any_of runtime ignore after result", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		throw std::logic_error{"This shouldn't propagate"};
@@ -526,7 +526,7 @@ TEST_CASE("any_of runtime throw ignored after result", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of compile-time throw not ignored without any results", "[any_of]") {
+TEST_CASE("any_of compile-time rethrow without any results", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::rethrow>(
 		[] -> lazy::task<int> {
 			throw std::logic_error{"Either this should propagate"};
@@ -543,7 +543,7 @@ TEST_CASE("any_of compile-time throw not ignored without any results", "[any_of]
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
-TEST_CASE("any_of compile-time throw not ignored after result", "[any_of]") {
+TEST_CASE("any_of compile-time rethrow after result", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::rethrow>(
 		[] -> lazy::task<int> {
 			co_yield wait_for{10ms};
@@ -567,7 +567,7 @@ TEST_CASE("any_of compile-time throw not ignored after result", "[any_of]") {
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
-TEST_CASE("any_of runtime throw not ignored without any results", "[any_of]") {
+TEST_CASE("any_of runtime rethrow without any results", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		throw std::logic_error{"Either this should propagate"};
@@ -584,7 +584,7 @@ TEST_CASE("any_of runtime throw not ignored without any results", "[any_of]") {
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
-TEST_CASE("any_of runtime throw not ignored after result", "[any_of]") {
+TEST_CASE("any_of runtime rethrow after result", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		co_yield wait_for{10ms};
@@ -608,7 +608,7 @@ TEST_CASE("any_of runtime throw not ignored after result", "[any_of]") {
 	REQUIRE_THROWS_AS(r.wait(), std::logic_error);
 }
 
-TEST_CASE("any_of compile-time throw yielded without any results", "[any_of]") {
+TEST_CASE("any_of compile-time yield without any results", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::yield>(
 		[] -> lazy::task<int> {
 			throw std::logic_error{"Either this should propagate"};
@@ -631,7 +631,7 @@ TEST_CASE("any_of compile-time throw yielded without any results", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of compile-time throw yielded after result", "[any_of]") {
+TEST_CASE("any_of compile-time yield after result", "[any_of]") {
 	lazy::root r{lazy::any_of<lazy::exception_mode::yield>(
 		[] -> lazy::task<int> {
 			co_yield wait_for{10ms};
@@ -661,7 +661,7 @@ TEST_CASE("any_of compile-time throw yielded after result", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of runtime throw yielded without any results", "[any_of]") {
+TEST_CASE("any_of runtime yield without any results", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		throw std::logic_error{"Either this should propagate"};
@@ -684,7 +684,7 @@ TEST_CASE("any_of runtime throw yielded without any results", "[any_of]") {
 	REQUIRE(r.wait() == lazy::state::done);
 }
 
-TEST_CASE("any_of runtime throw yielded after result", "[any_of]") {
+TEST_CASE("any_of runtime yield after result", "[any_of]") {
 	std::vector<lazy::task<int>> tasks;
 	tasks.emplace_back([] -> lazy::task<int> {
 		co_yield wait_for{10ms};
