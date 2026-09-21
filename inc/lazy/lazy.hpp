@@ -340,10 +340,8 @@ namespace lazy {
 					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
 						auto ptr{reinterpret_cast<U *>(self)};
 						if(log <= ptr->level) {
-							//TODO: use appropriate memory_order here!
-							for(auto expected{false}; not ptr->message_lock.compare_exchange_weak(expected, true); expected = false);
-							//TODO: use appropriate memory_order here!
-							const struct guard final { std::atomic<bool> & flag; ~guard() noexcept { flag = false; } } g{ptr->message_lock}; //defer...
+							for(auto expected{false}; not ptr->message_lock.compare_exchange_weak(expected, true, std::memory_order::acquire, std::memory_order::relaxed); expected = false);
+							const struct guard final { std::atomic<bool> & flag; ~guard() noexcept { flag.store(false, std::memory_order::release); } } g{ptr->message_lock}; //defer...
 							ptr->messages.emplace_back(loc, log, msg());
 						}
 					}
@@ -1464,14 +1462,12 @@ namespace lazy {
 		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
 			const auto self{co_await get_identity};
 
-			//TODO: use appropriate memory_order here!
-			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
+			for(id expected{}; not state.compare_exchange_strong(expected, self, std::memory_order::acquire, std::memory_order::relaxed); expected = {}) {
 				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
 				co_yield blocked;
 			}
 
-			//TODO: use appropriate memory_order here!
-			const struct guard final { atomic_t & state; ~guard() noexcept { state = id{}; } } g{state}; //defer...
+			const struct guard final { atomic_t & state; ~guard() noexcept { state.store(id{}, std::memory_order::release); } } g{state}; //defer...
 
 			co_return co_await std::move(t);
 		}
@@ -1498,14 +1494,12 @@ namespace lazy {
 		//! @brief execute @c t whilst @c *this is locked
 		template<typename Alloc, typename T>
 		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
-			//TODO: use appropriate memory_order here!
-			for(std::uint64_t expected{0}; not state.compare_exchange_strong(expected, write_locked); expected = 0) {
+			for(std::uint64_t expected{0}; not state.compare_exchange_strong(expected, write_locked, std::memory_order::acquire, std::memory_order::relaxed); expected = 0) {
 				//TODO: deadlock-detection like in @c mutex?
 				co_yield blocked;
 			}
 
-			//TODO: use appropriate memory_order here!
-			const struct guard final { atomic_t & state; ~guard() noexcept { state = 0; } } g{state}; //defer...
+			const struct guard final { atomic_t & state; ~guard() noexcept { state.store(0, std::memory_order::release); } } g{state}; //defer...
 
 			co_return co_await std::move(t);
 		}
