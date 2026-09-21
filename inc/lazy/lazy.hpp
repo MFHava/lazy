@@ -25,8 +25,6 @@
 #include <system_error>
 #include <source_location>
 
-//TODO: for all atomic operations: determine correct memory_order!
-
 //! @brief coroutine statements supported by all coroutine wrappers:
 //!  * @code co_yield progress; @endcode to yield control back from the coroutine to the caller
 //!  * @code co_yield blocked; @endcode to yield control back from the coroutine to the caller and signal that progress is not possible due to a synchronization primitive
@@ -342,7 +340,9 @@ namespace lazy {
 					+[](void * self, std::source_location loc, log_level log, compat::function_ref<std::string()> msg) {
 						auto ptr{reinterpret_cast<U *>(self)};
 						if(log <= ptr->level) {
+							//TODO: use appropriate memory_order here!
 							for(auto expected{false}; not ptr->message_lock.compare_exchange_weak(expected, true); expected = false);
+							//TODO: use appropriate memory_order here!
 							const struct guard final { std::atomic<bool> & flag; ~guard() noexcept { flag = false; } } g{ptr->message_lock}; //defer...
 							ptr->messages.emplace_back(loc, log, msg());
 						}
@@ -911,8 +911,10 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
+					//TODO: use appropriate memory_order here!
 					if(not data.bottom.done()) (data.rd.blocked() ? blocked : suspended) = true;
 				} catch(...) {
+					//TODO: use appropriate memory_order here!
 					if(auto expected{false}; stop.compare_exchange_strong(expected, true))
 						eptr = std::current_exception();
 				}
@@ -923,6 +925,7 @@ namespace lazy {
 				std::rethrow_exception(eptr);
 			}
 
+			//TODO: use appropriate memory_order here!
 			if(not blocked and not suspended) return state::done; //! @note all tasks are done
 			if(blocked and not suspended) return state::blocked;
 			return state::suspended;
@@ -942,6 +945,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
+			//TODO: use appropriate memory_order here!
 			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
@@ -983,6 +987,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
+			//TODO: use appropriate memory_order here!
 			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root}; })
@@ -1067,19 +1072,24 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
+					//TODO: use appropriate memory_order here!
 					if(data.bottom.done()) stop = done = true;
+					//TODO: use appropriate memory_order here!
 					else (data.rd.blocked() ? blocked : suspended) = true;
 				} catch(...) {
 					if constexpr(Mode == exception_mode::ignore) {
 						data.bottom = std::coroutine_handle<>{};
 					} else {
 						data.eptr = std::current_exception();
+						//TODO: use appropriate memory_order here!
 						stop = true;
 					}
+					//TODO: use appropriate memory_order here!
 					done = true;
 				}
 			});
 
+			//TODO: use appropriate memory_order here!
 			if(done) return state::done; //! @note at least one task done ...
 			if(blocked and not suspended) return state::blocked;
 			return state::suspended;
@@ -1101,6 +1111,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
+			//TODO: use appropriate memory_order here!
 			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
@@ -1162,6 +1173,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
+			//TODO: use appropriate memory_order here!
 			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root, {}}; })
@@ -1452,11 +1464,13 @@ namespace lazy {
 		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
 			const auto self{co_await get_identity};
 
+			//TODO: use appropriate memory_order here!
 			for(id expected{}; not state.compare_exchange_strong(expected, self); expected = {}) {
 				if(expected == self) throw std::system_error{std::make_error_code(std::errc::resource_deadlock_would_occur)};
 				co_yield blocked;
 			}
 
+			//TODO: use appropriate memory_order here!
 			const struct guard final { atomic_t & state; ~guard() noexcept { state = id{}; } } g{state}; //defer...
 
 			co_return co_await std::move(t);
@@ -1484,11 +1498,13 @@ namespace lazy {
 		//! @brief execute @c t whilst @c *this is locked
 		template<typename Alloc, typename T>
 		auto locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
+			//TODO: use appropriate memory_order here!
 			for(std::uint64_t expected{0}; not state.compare_exchange_strong(expected, write_locked); expected = 0) {
 				//TODO: deadlock-detection like in @c mutex?
 				co_yield blocked;
 			}
 
+			//TODO: use appropriate memory_order here!
 			const struct guard final { atomic_t & state; ~guard() noexcept { state = 0; } } g{state}; //defer...
 
 			co_return co_await std::move(t);
@@ -1500,15 +1516,18 @@ namespace lazy {
 		//! @brief execute @c t whilst @c *this is shared locked
 		template<typename Alloc, typename T>
 		auto shared_locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
+			//TODO: use appropriate memory_order here!
 			for(auto val{state.load()};; val = state.load()) {
 				if(val == write_locked) co_yield blocked;
 				else {
 					const auto new_{val + 1};
 					if(new_ == write_locked) throw std::system_error{std::make_error_code(std::errc::value_too_large)};
+					//TODO: use appropriate memory_order here!
 					if(state.compare_exchange_strong(val, new_)) break;
 				}
 			}
 
+			//TODO: use appropriate memory_order here!
 			const struct guard final { atomic_t & state; ~guard() noexcept { --state; } } g{state}; //defer...
 
 			co_return co_await std::move(t);
