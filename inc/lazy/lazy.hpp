@@ -900,7 +900,9 @@ namespace lazy {
 
 		static
 		auto run(std::atomic<bool> & stop, std::span<fork_data> datas) {
-			std::atomic<bool> blocked{false}, suspended{false};
+			enum { blocked = 1U, suspended = 2U, };
+			std::atomic<unsigned> fork_state{0};
+			static_assert(decltype(fork_state)::is_always_lock_free);
 			std::exception_ptr eptr; //! @note concurrent access guarded by @c stop
 
 			compat::parallel_for_each(datas, [&](auto & data) {
@@ -910,23 +912,22 @@ namespace lazy {
 				try {
 					data.rd.top.resume();
 					if(data.bottom.done()) return;
-					if(data.rd.blocked()) blocked = true; //TODO: use appropriate memory_order here!
-					else suspended = true; //TODO: use appropriate memory_order here!
+					if(data.rd.blocked()) fork_state.fetch_or(blocked); //TODO: use appropriate memory_order here!
+					else fork_state.fetch_or(suspended); //TODO: use appropriate memory_order here!
 				} catch(...) {
-					//TODO: use appropriate memory_order here!
-					if(auto expected{false}; stop.compare_exchange_strong(expected, true))
+					if(auto expected{false}; stop.compare_exchange_strong(expected, true)) //TODO: use appropriate memory_order here!
 						eptr = std::current_exception();
 				}
 			});
 
-			if(stop) {
+			if(stop.load()) { //TODO: use appropriate memory_order here!
 				contract_assert(eptr);
 				std::rethrow_exception(eptr);
 			}
 
-			//TODO: use appropriate memory_order here!
-			if(not blocked and not suspended) return state::done; //! @note all tasks are done
-			if(blocked and not suspended) return state::blocked;
+			const auto s{fork_state.load()}; //TODO: use appropriate memory_order here!
+			if(not (s & blocked) and not (s & suspended)) return state::done; //! @note all tasks are done
+			if((s & blocked) and not (s & suspended)) return state::blocked;
 			return state::suspended;
 		}
 	public:
@@ -944,8 +945,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
-			//TODO: use appropriate memory_order here!
-			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return stop.load() /*TODO: use appropriate memory_order here!*/ ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
 			std::array<fork_data, sizeof...(Tasks)> datas{fork_data{tasks.handle, root}...};
@@ -986,8 +986,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
-			//TODO: use appropriate memory_order here!
-			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return stop.load() /*TODO: use appropriate memory_order here!*/ ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root}; })
 							 | std::ranges::to<std::vector<fork_data, typename std::allocator_traits<Alloc>::template rebind_alloc<fork_data>>>(alloc)};
@@ -1062,7 +1061,9 @@ namespace lazy {
 
 		static
 		auto run(std::atomic<bool> & stop, std::span<fork_data> datas) {
-			std::atomic<bool> blocked{false}, suspended{false}, done{false};
+			enum { blocked = 1U, suspended = 2U, done = 4U, };
+			std::atomic<unsigned> fork_state{0};
+			static_assert(decltype(fork_state)::is_always_lock_free);
 
 			compat::parallel_for_each(datas, [&](auto & data) {
 				if(not data.bottom) return;
@@ -1072,28 +1073,26 @@ namespace lazy {
 				try {
 					data.rd.top.resume();
 					if(data.bottom.done()) {
-						stop = true; //TODO: use appropriate memory_order here!
-						done = true; //TODO: use appropriate memory_order here!
+						stop.store(true); //TODO: use appropriate memory_order here!
+						fork_state.fetch_or(done); //TODO: use appropriate memory_order here!
 					} else {
-						if(data.rd.blocked()) blocked = true; //TODO: use appropriate memory_order here!
-						else suspended = true; //TODO: use appropriate memory_order here!
+						if(data.rd.blocked()) fork_state.fetch_or(blocked); //TODO: use appropriate memory_order here!
+						else fork_state.fetch_or(suspended); //TODO: use appropriate memory_order here!
 					}
 				} catch(...) {
 					if constexpr(Mode == exception_mode::ignore) {
 						data.bottom = std::coroutine_handle<>{};
 					} else {
 						data.eptr = std::current_exception();
-						//TODO: use appropriate memory_order here!
-						stop = true;
+						stop.store(true); //TODO: use appropriate memory_order here!
 					}
-					//TODO: use appropriate memory_order here!
-					done = true;
+					fork_state.fetch_or(done); //TODO: use appropriate memory_order here!
 				}
 			});
 
-			//TODO: use appropriate memory_order here!
-			if(done) return state::done; //! @note at least one task done ...
-			if(blocked and not suspended) return state::blocked;
+			const auto s{fork_state.load()}; //TODO: use appropriate memory_order here!
+			if(s & done) return state::done; //! @note at least one task done ...
+			if((s & blocked) and not (s & suspended)) return state::blocked;
 			return state::suspended;
 		}
 	public:
@@ -1113,8 +1112,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
-			//TODO: use appropriate memory_order here!
-			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return stop.load() /*TODO: use appropriate memory_order here!*/ ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
 			std::array<fork_data, sizeof...(Tasks)> datas{fork_data{tasks.handle, root, {}}...};
@@ -1125,7 +1123,7 @@ namespace lazy {
 			}(std::index_sequence_for<Tasks...>{});
 
 			using Result = internal::compute_any_of_result_t<Mode, Tasks...>;
-			for(;; stop = false) {
+			for(;; stop.store(false)) { //TODO: use appropriate memory_order here!
 				switch(run(stop, datas)) {
 					case state::suspended: co_yield progress; break;
 					case state::blocked: co_yield blocked; break;
@@ -1175,8 +1173,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<bool> stop{false};
-			//TODO: use appropriate memory_order here!
-			const auto suspend{[&] noexcept { return stop ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return stop.load() /*TODO: use appropriate memory_order here!*/ ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root, {}}; })
 			                 | std::ranges::to<std::vector<fork_data, typename std::allocator_traits<Alloc>::template rebind_alloc<fork_data>>>(alloc)};
@@ -1186,7 +1183,7 @@ namespace lazy {
 				task.handle.promise().set_root(data.rd);
 			}
 
-			for(;; stop = false) {
+			for(;; stop.store(false)) { //TODO: use appropriate memory_order here!
 				switch(run(stop, datas)) {
 					case state::suspended: co_yield progress; break;
 					case state::blocked: co_yield blocked; break;
