@@ -1060,7 +1060,7 @@ namespace lazy {
 			std::exception_ptr eptr;
 		};
 
-		enum : unsigned { result = 1U, suspend = 2U, block = 4U, complete = 8U, }; //TODO: is complete redundant?
+		enum : unsigned { result = 1U, suspend = 2U, block = 4U, };
 
 		static
 		auto run(std::atomic<unsigned> & flags, std::span<fork_data> datas) {
@@ -1073,24 +1073,25 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
-					if(data.bottom.done()) flags.fetch_or(result | complete); //TODO: use appropriate memory_order here!
+					if(data.bottom.done()) flags.fetch_or(result); //TODO: use appropriate memory_order here!
 					else if(data.rd.blocked()) flags.fetch_or(block); //TODO: use appropriate memory_order here!
 					else flags.fetch_or(suspend); //TODO: use appropriate memory_order here!
 				} catch(...) {
 					if constexpr(Mode == exception_mode::ignore) {
 						data.bottom = std::coroutine_handle<>{};
-						flags.fetch_or(complete); //TODO: use appropriate memory_order here!
 					} else {
 						data.eptr = std::current_exception();
-						flags.fetch_or(result | complete); //TODO: use appropriate memory_order here!
+						flags.fetch_or(result); //TODO: use appropriate memory_order here!
 					}
 				}
 			});
 
 			const auto s{flags.load()}; //TODO: use appropriate memory_order here!
-			if(s & complete) return state::done; //! @note at least one task done ...
+			if(s & result) return state::done; //! @note at least one task is done ...
 			if((s & block) and not (s & suspend)) return state::blocked;
-			return state::suspended;
+			if(s & suspend) return state::suspended;
+			if constexpr(Mode == exception_mode::ignore) return state::done; //! @attention at least one task "completed" with ignored exception ...
+			else std::unreachable();
 		}
 	public:
 		//! @returns a @c task managing the wrapped @c tasks, returning their results
