@@ -909,8 +909,9 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
-					//TODO: use appropriate memory_order here!
-					if(not data.bottom.done()) (data.rd.blocked() ? blocked : suspended) = true;
+					if(data.bottom.done()) return;
+					if(data.rd.blocked()) blocked = true; //TODO: use appropriate memory_order here!
+					else suspended = true; //TODO: use appropriate memory_order here!
 				} catch(...) {
 					//TODO: use appropriate memory_order here!
 					if(auto expected{false}; stop.compare_exchange_strong(expected, true))
@@ -1070,10 +1071,13 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
-					//TODO: use appropriate memory_order here!
-					if(data.bottom.done()) stop = done = true;
-					//TODO: use appropriate memory_order here!
-					else (data.rd.blocked() ? blocked : suspended) = true;
+					if(data.bottom.done()) {
+						stop = true; //TODO: use appropriate memory_order here!
+						done = true; //TODO: use appropriate memory_order here!
+					} else {
+						if(data.rd.blocked()) blocked = true; //TODO: use appropriate memory_order here!
+						else suspended = true; //TODO: use appropriate memory_order here!
+					}
 				} catch(...) {
 					if constexpr(Mode == exception_mode::ignore) {
 						data.bottom = std::coroutine_handle<>{};
