@@ -926,10 +926,9 @@ namespace lazy {
 				std::rethrow_exception(eptr);
 			}
 
-			if(not (s & suspend)) {
-				if(not (s & block)) return state::done; //! @note all tasks are done
-				else return state::blocked;
-			} else return state::suspended;
+			if((s & block) and not (s & suspend)) return state::blocked;
+			if(s & suspend) return state::suspended;
+			return state::done; //! @note all tasks are done
 		}
 	public:
 		//! @returns a @c task managing the wrapped @c tasks, returning their results if any
