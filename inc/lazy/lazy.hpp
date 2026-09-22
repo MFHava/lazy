@@ -920,12 +920,9 @@ namespace lazy {
 				}
 			});
 
-			const auto s{flags.load()}; //TODO: use appropriate memory_order here!
-			if(s & abort) {
-				contract_assert(eptr);
-				std::rethrow_exception(eptr);
-			}
+			if(eptr) std::rethrow_exception(eptr);
 
+			const auto s{flags.load()}; //TODO: use appropriate memory_order here!
 			if((s & block) and not (s & suspend)) return state::blocked;
 			if(s & suspend) return state::suspended;
 			return state::done; //! @note all tasks are done
