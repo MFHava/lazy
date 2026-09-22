@@ -1510,19 +1510,16 @@ namespace lazy {
 		//! @brief execute @c t whilst @c *this is shared locked
 		template<typename Alloc, typename T>
 		auto shared_locked(std::allocator_arg_t, Alloc, task<T> t) -> task<T> pre(not t.valueless()) {
-			//TODO: use appropriate memory_order here!
-			for(auto val{state.load()};; val = state.load()) {
+			for(auto val{state.load(std::memory_order::relaxed)};; val = state.load(std::memory_order::relaxed)) {
 				if(val == write_locked) co_yield blocked;
 				else {
 					const auto new_{val + 1};
 					if(new_ == write_locked) throw std::system_error{std::make_error_code(std::errc::value_too_large)};
-					//TODO: use appropriate memory_order here!
-					if(state.compare_exchange_strong(val, new_)) break;
+					if(state.compare_exchange_strong(val, new_, std::memory_order::acquire, std::memory_order::relaxed)) break;
 				}
 			}
 
-			//TODO: use appropriate memory_order here!
-			const struct guard final { atomic_t & state; ~guard() noexcept { --state; } } g{state}; //defer...
+			const struct guard final { atomic_t & state; ~guard() noexcept { state.fetch_sub(1, std::memory_order::release); } } g{state}; //defer...
 
 			co_return co_await std::move(t);
 		}
