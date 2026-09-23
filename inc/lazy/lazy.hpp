@@ -902,9 +902,10 @@ namespace lazy {
 
 		static
 		auto run(std::atomic<unsigned> & flags, std::span<fork_data> datas) {
-			flags.store(0); //TODO: use appropriate memory_order here!
+			flags.store(0, std::memory_order::relaxed);
 			std::exception_ptr eptr; //! @note concurrent access guarded by @c flags & abort
 
+			//! @note fork-join-model implies memory barrier at fork and join
 			compat::parallel_for_each(datas, [&](auto & data) {
 				if(data.bottom.done()) return;
 				data.rd.reset_state();
@@ -912,17 +913,17 @@ namespace lazy {
 				try {
 					data.rd.top.resume();
 					if(data.bottom.done()) return;
-					if(data.rd.blocked()) flags.fetch_or(block); //TODO: use appropriate memory_order here!
-					else flags.fetch_or(suspend); //TODO: use appropriate memory_order here!
+					if(data.rd.blocked()) flags.fetch_or(block, std::memory_order::relaxed);
+					else flags.fetch_or(suspend, std::memory_order::relaxed);
 				} catch(...) {
-					if(not (flags.fetch_or(abort) /*TODO: use appropriate memory_order here!*/ & abort))
+					if(not (flags.fetch_or(abort, std::memory_order::acq_rel) & abort))
 						eptr = std::current_exception();
 				}
 			});
 
 			if(eptr) std::rethrow_exception(eptr);
 
-			const auto s{flags.load()}; //TODO: use appropriate memory_order here!
+			const auto s{flags.load(std::memory_order::relaxed)};
 			if((s & block) and not (s & suspend)) return state::blocked;
 			if(s & suspend) return state::suspended;
 			return state::done; //! @note all tasks are done
@@ -942,7 +943,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<unsigned> flags{0};
-			const auto suspend{[&] noexcept { return (flags.load() /*TODO: use appropriate memory_order here!*/ & abort) ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return (flags.load(std::memory_order::relaxed) & abort) ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
 			std::array<fork_data, sizeof...(Tasks)> datas{fork_data{tasks.handle, root}...};
@@ -983,7 +984,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<unsigned> flags{0};
-			const auto suspend{[&] noexcept { return (flags.load() /*TODO: use appropriate memory_order here!*/ & abort) ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return (flags.load(std::memory_order::relaxed) & abort) ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root}; })
 							 | std::ranges::to<std::vector<fork_data, typename std::allocator_traits<Alloc>::template rebind_alloc<fork_data>>>(alloc)};
@@ -1060,8 +1061,9 @@ namespace lazy {
 
 		static
 		auto run(std::atomic<unsigned> & flags, std::span<fork_data> datas) {
-			flags.store(0); //TODO: use appropriate memory_order here!
+			flags.store(0, std::memory_order::relaxed);
 
+			//! @note fork-join-model implies memory barrier at fork and join
 			compat::parallel_for_each(datas, [&](auto & data) {
 				if(not data.bottom) return;
 				contract_assert(not data.bottom.done());
@@ -1069,20 +1071,20 @@ namespace lazy {
 
 				try {
 					data.rd.top.resume();
-					if(data.bottom.done()) flags.fetch_or(result); //TODO: use appropriate memory_order here!
-					else if(data.rd.blocked()) flags.fetch_or(block); //TODO: use appropriate memory_order here!
-					else flags.fetch_or(suspend); //TODO: use appropriate memory_order here!
+					if(data.bottom.done()) flags.fetch_or(result, std::memory_order::relaxed);
+					else if(data.rd.blocked()) flags.fetch_or(block, std::memory_order::relaxed);
+					else flags.fetch_or(suspend, std::memory_order::relaxed);
 				} catch(...) {
 					if constexpr(Mode == exception_mode::ignore) {
 						data.bottom = std::coroutine_handle<>{};
 					} else {
 						data.eptr = std::current_exception();
-						flags.fetch_or(result); //TODO: use appropriate memory_order here!
+						flags.fetch_or(result, std::memory_order::relaxed);
 					}
 				}
 			});
 
-			const auto s{flags.load()}; //TODO: use appropriate memory_order here!
+			const auto s{flags.load(std::memory_order::relaxed)};
 			if(s & result) return state::done; //! @note at least one task is done ...
 			if((s & block) and not (s & suspend)) return state::blocked;
 			if(s & suspend) return state::suspended;
@@ -1106,7 +1108,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<unsigned> flags{0};
-			const auto suspend{[&] noexcept { return (flags.load() /*TODO: use appropriate memory_order here!*/ & result) ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return (flags.load(std::memory_order::relaxed) & result) ? true : root.suspend(); }};
 
 			auto handles{std::make_tuple(std::ref(tasks.handle)...)};
 			std::array<fork_data, sizeof...(Tasks)> datas{fork_data{tasks.handle, root, {}}...};
@@ -1167,7 +1169,7 @@ namespace lazy {
 			const auto & root{co_await internal::get_root_awaiter{}};
 
 			std::atomic<unsigned> flags{0};
-			const auto suspend{[&] noexcept { return (flags.load() /*TODO: use appropriate memory_order here!*/ & result) ? true : root.suspend(); }};
+			const auto suspend{[&] noexcept { return (flags.load(std::memory_order::relaxed) & result) ? true : root.suspend(); }};
 
 			auto datas{tasks | std::views::transform([&](const auto & task) { return fork_data{task.handle, root, {}}; })
 			                 | std::ranges::to<std::vector<fork_data, typename std::allocator_traits<Alloc>::template rebind_alloc<fork_data>>>(alloc)};
