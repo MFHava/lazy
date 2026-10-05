@@ -844,6 +844,14 @@ namespace lazy {
 			using type = std::conditional_t<(std::tuple_size_v<tmp1> == 1), std::tuple_element_t<0, tmp1>, tuple_to_variant_t<tmp1>>;
 		};
 
+		template<task... Ts>
+		struct compute_any_of_result<exception_mode::yield, Ts...> {
+		private:
+			using tmp0 = compute_any_of_result_t<exception_mode::ignore, Ts...>;
+		public:
+			using type = std::expected<tmp0, std::exception_ptr>;
+		};
+
 		template<exception_mode Mode, std::ranges::range T, typename Alloc>
 		requires(Mode != exception_mode::yield)
 		struct compute_any_of_result<Mode, T, Alloc> {
@@ -855,11 +863,10 @@ namespace lazy {
 			static_assert(not std::is_void_v<type>);
 		};
 
-		template<exception_mode Mode, typename... Ts>
-		requires(Mode == exception_mode::yield)
-		struct compute_any_of_result<Mode, Ts...> {
+		template<std::ranges::range T, typename Alloc>
+		struct compute_any_of_result<exception_mode::yield, T, Alloc> {
 		private:
-			using tmp0 = compute_any_of_result_t<exception_mode::ignore, Ts...>;
+			using tmp0 = compute_any_of_result_t<exception_mode::ignore, T, Alloc>;
 		public:
 			using type = std::expected<tmp0, std::exception_ptr>;
 		};
