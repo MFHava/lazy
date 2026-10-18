@@ -247,7 +247,7 @@ TEST_CASE("all_of compile-time multiple", "[all_of]") {
 }
 
 TEST_CASE("all_of counted compile-time", "[all_of]") {
-	lazy::root r{lazy::all_of(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::all_of(lazy::fork(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; }))};
 
 	REQUIRE(r.wait() == lazy::state::done);
 	REQUIRE(r.result());
@@ -258,7 +258,7 @@ TEST_CASE("all_of counted compile-time", "[all_of]") {
 }
 
 TEST_CASE("all_of counted runtime", "[all_of]") {
-	lazy::root r{lazy::all_of(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::all_of(lazy::fork(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; }))};
 
 	REQUIRE(r.wait() == lazy::state::done);
 	REQUIRE(r.result());
@@ -292,13 +292,13 @@ TEST_CASE("all_of runtime throw", "[all_of]") {
 }
 
 TEST_CASE("all_of compile-time blocked", "[all_of]") {
-	lazy::root r{lazy::all_of(lazy::cw<2>, [](auto i) -> lazy::task<> {
+	lazy::root r{lazy::all_of(lazy::fork(lazy::cw<2>, [](auto i) -> lazy::task<> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_yield lazy::blocked;
 		co_yield lazy::progress;
-	})};
+	}))};
 
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
@@ -308,13 +308,13 @@ TEST_CASE("all_of compile-time blocked", "[all_of]") {
 }
 
 TEST_CASE("all_of runtime blocked", "[all_of]") {
-	lazy::root r{lazy::all_of(2, [](auto i) -> lazy::task<> {
+	lazy::root r{lazy::all_of(lazy::fork(2, [](auto i) -> lazy::task<> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_yield lazy::blocked;
 		co_yield lazy::progress;
-	})};
+	}))};
 
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
@@ -422,7 +422,7 @@ TEST_CASE("any_of compile-time int, double", "[any_of]") {
 }
 
 TEST_CASE("any_of counted compile-time", "[any_of]") {
-	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::fork(lazy::cw<3>, [](auto i) -> lazy::task<decltype(i)> { co_return i; }))};
 	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::size_t>);
 
 	std::vector<std::size_t> tmp;
@@ -432,14 +432,13 @@ TEST_CASE("any_of counted compile-time", "[any_of]") {
 }
 
 TEST_CASE("any_of counted runtime", "[any_of]") {
-	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; })};
+	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::fork(3, [](auto i) -> lazy::task<decltype(i)> { co_return i; }))};
 	static_assert(std::is_same_v<std::decay_t<decltype(*r.result())>, std::size_t>);
 
 	std::vector<std::size_t> tmp;
 	while(r.wait() != lazy::state::done) tmp.emplace_back(*r.result());
 	std::ranges::sort(tmp);
 	REQUIRE(std::ranges::equal(tmp, std::array{0, 1, 2}));
-
 }
 
 TEST_CASE("any_of compile-time ignore without any results", "[any_of]") {
@@ -715,14 +714,14 @@ TEST_CASE("any_of runtime yield after result", "[any_of]") {
 }
 
 TEST_CASE("any_of compile-time blocked", "[any_of]") {
-	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::cw<2>, [](auto i) -> lazy::task<int> {
+	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::fork(lazy::cw<2>, [](auto i) -> lazy::task<int> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_return 0;
-	})};
+	}))};
 
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
 	REQUIRE(not r.result());
@@ -739,14 +738,14 @@ TEST_CASE("any_of compile-time blocked", "[any_of]") {
 }
 
 TEST_CASE("any_of runtime blocked", "[any_of]") {
-	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(2, [](auto i) -> lazy::task<int> {
+	lazy::root r{lazy::any_of<lazy::exception_mode::ignore>(lazy::fork(2, [](auto i) -> lazy::task<int> {
 		if(i == 0) co_yield lazy::progress;
 		else co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_yield lazy::blocked;
 		co_yield lazy::progress;
 		co_return 0;
-	})};
+	}))};
 
 	REQUIRE(r.wait_for(0ms) == lazy::state::suspended);
 	REQUIRE(not r.result());
